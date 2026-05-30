@@ -76,9 +76,7 @@ void renderCurrent() {
     }
     if (g_cycleIdx >= g_cache.size()) g_cycleIdx = 0;
     const Aircraft& ac = g_cache[g_cycleIdx];
-    std::string l1 = formatLine1(ac);
-    if (g_stale) l1[15] = '*';   // stale indicator in the last column
-    lcdShow(l1, formatLine2(ac));
+    lcdShow(formatLine1(ac, g_stale), formatLine2(ac));
     g_cycleIdx++;
 }
 

@@ -90,7 +90,8 @@ inline std::string padTo16(std::string s) {
     return s;
 }
 
-inline std::string formatLine1(const Aircraft& ac) {
+inline std::string formatLine1(const Aircraft& ac, bool stale = false) {
+    const int CONTENT = (int)LCD_COLS - 1; // reserve last column for status flag
     std::string left = ac.callsign.empty() ? std::string("------") : ac.callsign;
     if ((int)left.size() > CALLSIGN_MAX) left = left.substr(0, CALLSIGN_MAX);
 
@@ -101,14 +102,16 @@ inline std::string formatLine1(const Aircraft& ac) {
     std::snprintf(dist, sizeof(dist), "%ldkm", km);
     std::string right(dist);
 
-    int pad = (int)LCD_COLS - (int)left.size() - (int)right.size();
+    int pad = CONTENT - (int)left.size() - (int)right.size();
     if (pad < 1) {
-        int keep = (int)LCD_COLS - (int)right.size() - 1;
+        int keep = CONTENT - (int)right.size() - 1;
         if (keep < 0) keep = 0;
         left = left.substr(0, keep);
         pad = 1;
     }
-    return left + std::string(pad, ' ') + right;
+    std::string line = left + std::string(pad, ' ') + right;
+    line += (stale ? '*' : ' ');
+    return line;
 }
 
 inline std::string formatLine2(const Aircraft& ac) {

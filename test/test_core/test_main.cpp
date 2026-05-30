@@ -64,14 +64,14 @@ void test_formatLine1_basic(void) {
     Aircraft a = mkAc("DLH4AB", "A320", 35000, false, 453.6, 12.0);
     std::string l1 = formatLine1(a);
     TEST_ASSERT_EQUAL_UINT32(16, l1.size());          // always exactly 16
-    TEST_ASSERT_EQUAL_STRING("DLH4AB      12km", l1.c_str());
+    TEST_ASSERT_EQUAL_STRING("DLH4AB     12km ", l1.c_str());
 }
 
 void test_formatLine1_empty_callsign(void) {
     Aircraft a = mkAc("", "A320", 35000, false, 453.6, 5.0);
     std::string l1 = formatLine1(a);
     TEST_ASSERT_EQUAL_UINT32(16, l1.size());
-    TEST_ASSERT_EQUAL_STRING("------       5km", l1.c_str());
+    TEST_ASSERT_EQUAL_STRING("------      5km ", l1.c_str());
 }
 
 void test_formatLine2_basic(void) {
@@ -92,14 +92,21 @@ void test_formatLine1_long_callsign(void) {
     Aircraft a = mkAc("LONGCALL123", "A320", 35000, false, 453.6, 12.0);
     std::string l1 = formatLine1(a);
     TEST_ASSERT_EQUAL_UINT32(16, l1.size());
-    TEST_ASSERT_EQUAL_STRING("LONGCALL    12km", l1.c_str()); // truncated to 8
+    TEST_ASSERT_EQUAL_STRING("LONGCALL   12km ", l1.c_str()); // truncated to 8
 }
 
 void test_formatLine1_distance_clamped(void) {
     Aircraft a = mkAc("AAA", "A320", 35000, false, 453.6, 1500.0);
     std::string l1 = formatLine1(a);
     TEST_ASSERT_EQUAL_UINT32(16, l1.size());
-    TEST_ASSERT_EQUAL_STRING("AAA        999km", l1.c_str()); // clamped to 999
+    TEST_ASSERT_EQUAL_STRING("AAA       999km ", l1.c_str()); // clamped to 999
+}
+
+void test_formatLine1_stale_marker(void) {
+    Aircraft a = mkAc("DLH4AB", "A320", 35000, false, 453.6, 12.0);
+    std::string l1 = formatLine1(a, true);
+    TEST_ASSERT_EQUAL_UINT32(16, l1.size());
+    TEST_ASSERT_EQUAL_STRING("DLH4AB     12km*", l1.c_str()); // '*' in reserved last column
 }
 
 void test_formatLine2_nan_alt_and_speed(void) {
@@ -145,6 +152,7 @@ int main(int, char **) {
     RUN_TEST(test_formatLine2_ground);
     RUN_TEST(test_formatLine1_long_callsign);
     RUN_TEST(test_formatLine1_distance_clamped);
+    RUN_TEST(test_formatLine1_stale_marker);
     RUN_TEST(test_formatLine2_nan_alt_and_speed);
     RUN_TEST(test_formatLine2_negative_altitude);
     RUN_TEST(test_formatLine2_extreme_values_clamped);
