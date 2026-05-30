@@ -16,7 +16,10 @@
 #define CYCLE_INTERVAL_MS 5000    // per-aircraft screen time
 #define MAX_AIRCRAFT      5       // how many nearest to rotate through
 
-// --- LCD (PCF8574 I2C backpack) ---
-#define LCD_ADDR    0x27          // try 0x3F if 0x27 shows nothing
-#define LCD_SDA     21
-#define LCD_SCL     22
+// --- LCD 1602 (parallel HD44780, 4-bit mode) ---
+#define LCD_RS  19
+#define LCD_EN  23
+#define LCD_D4  18
+#define LCD_D5  25
+#define LCD_D6  26
+#define LCD_D7  27

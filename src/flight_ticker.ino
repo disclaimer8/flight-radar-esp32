@@ -3,12 +3,11 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
-#include <Wire.h>
-#include <LiquidCrystal_I2C.h>
+#include <LiquidCrystal.h>
 #include "config.h"
 #include "flight_core.h"
 
-LiquidCrystal_I2C lcd(LCD_ADDR, 16, 2);
+LiquidCrystal lcd(LCD_RS, LCD_EN, LCD_D4, LCD_D5, LCD_D6, LCD_D7);
 
 std::vector<Aircraft> g_cache;
 size_t  g_cycleIdx = 0;
@@ -20,14 +19,6 @@ void lcdShow(const std::string& l1, const std::string& l2) {
     lcd.clear();
     lcd.setCursor(0, 0); lcd.print(l1.c_str());
     lcd.setCursor(0, 1); lcd.print(l2.c_str());
-}
-
-void i2cScan() {
-    Serial.println("I2C scan:");
-    for (byte a = 1; a < 127; a++) {
-        Wire.beginTransmission(a);
-        if (Wire.endTransmission() == 0) Serial.printf("  found @ 0x%02X\n", a);
-    }
 }
 
 void connectWifi() {
@@ -89,10 +80,7 @@ void renderCurrent() {
 
 void setup() {
     Serial.begin(115200);
-    Wire.begin(LCD_SDA, LCD_SCL);
-    i2cScan();
-    lcd.init();
-    lcd.backlight();
+    lcd.begin(16, 2);
     connectWifi();
     pollApi();
     renderCurrent();
