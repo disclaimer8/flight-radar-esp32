@@ -1,6 +1,7 @@
 #if defined(ARDUINO)
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
@@ -45,14 +46,20 @@ void connectWifi() {
 void pollApi() {
     if (WiFi.status() != WL_CONNECTED) { connectWifi(); return; }
 
-    char url[128];
+    char url[160];
     std::snprintf(url, sizeof(url),
-        "http://api.airplanes.live/v2/point/%.4f/%.4f/%d",
+        "https://api.airplanes.live/v2/point/%.4f/%.4f/%d",
         (double)MY_LAT, (double)MY_LON, (int)RADIUS_NM);
 
+    // Cloudflare 301-redirects http->https, so talk TLS directly. The API is
+    // public read-only data; skip cert validation rather than pin a CA.
+    WiFiClientSecure client;
+    client.setInsecure();
     HTTPClient http;
-    http.begin(url);
+    http.begin(client, url);
     http.setUserAgent("flight-ticker-esp32");
+    http.setConnectTimeout(8000);
+    http.setTimeout(8000);
     int code = http.GET();
     if (code == 200) {
         String payload = http.getString();
