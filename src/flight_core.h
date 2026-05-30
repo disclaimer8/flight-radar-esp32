@@ -1,5 +1,6 @@
 #pragma once
 #include <cmath>
+#include <cstdio>
 #include <ArduinoJson.h>
 #include <vector>
 #include <string>
@@ -77,4 +78,42 @@ inline std::vector<Aircraft> parseNearest(const std::string& json,
               [](const Aircraft& x, const Aircraft& y) { return x.distKm < y.distKm; });
     if (out.size() > maxN) out.resize(maxN);
     return out;
+}
+
+inline std::string padTo16(std::string s) {
+    if (s.size() > 16) return s.substr(0, 16);
+    s.append(16 - s.size(), ' ');
+    return s;
+}
+
+inline std::string formatLine1(const Aircraft& ac) {
+    std::string left = ac.callsign.empty() ? std::string("------")
+                                           : ac.callsign;
+    if (left.size() > 8) left = left.substr(0, 8);
+
+    char dist[8];
+    long km = std::lround(ac.distKm);
+    if (km > 999) km = 999;
+    std::snprintf(dist, sizeof(dist), "%ldkm", km);
+    std::string right(dist);
+
+    int pad = 16 - (int)left.size() - (int)right.size();
+    if (pad < 1) { left = left.substr(0, 16 - right.size() - 1); pad = 1; }
+    return left + std::string(pad, ' ') + right;
+}
+
+inline std::string formatLine2(const Aircraft& ac) {
+    std::string type = ac.type.empty() ? std::string("----") : ac.type;
+    if (type.size() > 4) type = type.substr(0, 4);
+
+    std::string altStr;
+    if (ac.onGround) altStr = "GND";
+    else if (std::isnan(ac.altFt)) altStr = "---";
+    else { char b[8]; std::snprintf(b, sizeof(b), "%ldm", std::lround(ftToM(ac.altFt))); altStr = b; }
+
+    std::string spdStr;
+    if (std::isnan(ac.gsKt)) spdStr = "---";
+    else { char b[8]; std::snprintf(b, sizeof(b), "%ld", std::lround(ktToKmh(ac.gsKt))); spdStr = b; }
+
+    return padTo16(type + " " + altStr + " " + spdStr);
 }
