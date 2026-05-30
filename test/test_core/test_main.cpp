@@ -88,6 +88,46 @@ void test_formatLine2_ground(void) {
     TEST_ASSERT_EQUAL_STRING("B772 GND 22     ", l2.c_str()); // 12kt->22km/h
 }
 
+void test_formatLine1_long_callsign(void) {
+    Aircraft a = mkAc("LONGCALL123", "A320", 35000, false, 453.6, 12.0);
+    std::string l1 = formatLine1(a);
+    TEST_ASSERT_EQUAL_UINT32(16, l1.size());
+    TEST_ASSERT_EQUAL_STRING("LONGCALL    12km", l1.c_str()); // truncated to 8
+}
+
+void test_formatLine1_distance_clamped(void) {
+    Aircraft a = mkAc("AAA", "A320", 35000, false, 453.6, 1500.0);
+    std::string l1 = formatLine1(a);
+    TEST_ASSERT_EQUAL_UINT32(16, l1.size());
+    TEST_ASSERT_EQUAL_STRING("AAA        999km", l1.c_str()); // clamped to 999
+}
+
+void test_formatLine2_nan_alt_and_speed(void) {
+    Aircraft a = mkAc("XYZ", "A320", NAN, false, NAN, 5.0);
+    std::string l2 = formatLine2(a);
+    TEST_ASSERT_EQUAL_UINT32(16, l2.size());
+    TEST_ASSERT_EQUAL_STRING("A320 --- ---    ", l2.c_str());
+}
+
+void test_formatLine2_negative_altitude(void) {
+    Aircraft a = mkAc("XYZ", "B738", -1000.0, false, 100.0, 5.0);
+    std::string l2 = formatLine2(a); // -1000ft -> -305m, 100kt -> 185km/h
+    TEST_ASSERT_EQUAL_UINT32(16, l2.size());
+    TEST_ASSERT_EQUAL_STRING("B738 -305m 185  ", l2.c_str());
+}
+
+void test_formatLine2_extreme_values_clamped(void) {
+    Aircraft a = mkAc("XYZ", "A320", 400000.0, false, 20000.0, 5.0);
+    std::string l2 = formatLine2(a); // clamp alt->99999m, spd->9999
+    TEST_ASSERT_EQUAL_UINT32(16, l2.size());
+    TEST_ASSERT_EQUAL_STRING("A320 99999m 9999", l2.c_str());
+}
+
+void test_parseNearest_malformed_json(void) {
+    auto list = parseNearest("not valid json", 48.0, 11.0, 5);
+    TEST_ASSERT_EQUAL_UINT32(0, list.size());
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -103,5 +143,11 @@ int main(int, char **) {
     RUN_TEST(test_formatLine1_empty_callsign);
     RUN_TEST(test_formatLine2_basic);
     RUN_TEST(test_formatLine2_ground);
+    RUN_TEST(test_formatLine1_long_callsign);
+    RUN_TEST(test_formatLine1_distance_clamped);
+    RUN_TEST(test_formatLine2_nan_alt_and_speed);
+    RUN_TEST(test_formatLine2_negative_altitude);
+    RUN_TEST(test_formatLine2_extreme_values_clamped);
+    RUN_TEST(test_parseNearest_malformed_json);
     return UNITY_END();
 }
