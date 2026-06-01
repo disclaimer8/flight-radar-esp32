@@ -13,13 +13,13 @@
 // --- Search + behavior tunables ---
 #define RADIUS_NM         30      // search radius, nautical miles (<=250)
 #define POLL_INTERVAL_MS  15000   // API poll period (rate limit is 1 req/s)
-#define CYCLE_INTERVAL_MS 5000    // per-aircraft screen time
-#define MAX_AIRCRAFT      5       // how many nearest to rotate through
+#define MAX_AIRCRAFT      10      // how many nearest to show on radar / page through
+#define IDLE_RETURN_MS    15000   // detail view auto-returns to radar after this idle
+#define SWEEP_PERIOD_MS   4000    // radar sweep: ms per full revolution
 
-// --- LCD 1602 (parallel HD44780, 4-bit mode) ---
-#define LCD_RS  19
-#define LCD_EN  23
-#define LCD_D4  18
-#define LCD_D5  25
-#define LCD_D6  26
-#define LCD_D7  27
+// --- Touch CST816S (I2C) on ESP32-S3-Touch-LCD-1.28 ---
+#define TOUCH_SDA  6
+#define TOUCH_SCL  7
+#define TOUCH_INT  5
+#define TOUCH_RST  13
+// (GC9A01 LCD pins are configured in platformio.ini via TFT_eSPI build flags.)
