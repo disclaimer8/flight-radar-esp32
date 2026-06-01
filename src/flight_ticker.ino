@@ -147,13 +147,16 @@ void drawDetail() {
     fb.setTextColor(TFT_WHITE, TFT_BLACK);
     fb.drawString(row.c_str(), CX, 168, 2);
 
-    // page-position dots
+    // page-position dots, spacing shrunk so the row always fits ~180px wide
     int n = (int)g_cache.size();
-    int spacing = 12;
-    int startX = CX - (n - 1) * spacing / 2;
-    for (int i = 0; i < n; i++) {
-        uint16_t c = (i == (int)g_idx) ? TFT_CYAN : TFT_DARKGREY;
-        fb.fillCircle(startX + i * spacing, 196, 2, c);
+    if (n > 1) {
+        int spacing = 12;
+        if ((n - 1) * spacing > 180) spacing = 180 / (n - 1);
+        int startX = CX - (n - 1) * spacing / 2;
+        for (int i = 0; i < n; i++) {
+            uint16_t c = (i == (int)g_idx) ? TFT_CYAN : TFT_DARKGREY;
+            fb.fillCircle(startX + i * spacing, 196, 2, c);
+        }
     }
 
     fb.pushSprite(0, 0);
@@ -200,6 +203,9 @@ void setup() {
 
 void loop() {
     unsigned long now = millis();
+    // pollApi() blocks up to ~8s (HTTP timeout), or ~20s during a WiFi reconnect;
+    // the sweep freezes and touches are ignored for that window. Acceptable on this
+    // single-threaded firmware — not a bug.
     if (now - g_lastPoll >= POLL_INTERVAL_MS) { pollApi(); g_lastPoll = now; }
 
     handleTouch();
