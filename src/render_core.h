@@ -32,6 +32,37 @@ inline ScreenPoint polarToXY(double bearing, double distKm, double rangeKm,
     return p;
 }
 
+// Short, non-padded display strings for the detail card.
+inline std::string fmtDist(double distKm) {
+    long km = std::lround(distKm);
+    if (km < 0) km = 0;
+    if (km > 999) km = 999;
+    char b[16];
+    std::snprintf(b, sizeof(b), "%ld km", km);
+    return b;
+}
+
+inline std::string fmtAlt(const Aircraft& ac) {
+    if (ac.onGround) return "GND";
+    if (std::isnan(ac.altFt)) return "---";
+    long m = std::lround(ftToM(ac.altFt));
+    if (m > 99999) m = 99999;
+    if (m < -9999) m = -9999;
+    char b[12];
+    std::snprintf(b, sizeof(b), "%ldm", m);
+    return b;
+}
+
+inline std::string fmtSpeed(const Aircraft& ac) {
+    if (std::isnan(ac.gsKt)) return "---";
+    long s = std::lround(ktToKmh(ac.gsKt));
+    if (s < 0) s = 0;
+    if (s > 9999) s = 9999;
+    char b[12];
+    std::snprintf(b, sizeof(b), "%ld", s);
+    return b;
+}
+
 // 8-point compass rose label for a bearing in degrees.
 inline const char* compassPoint(double bearing) {
     static const char* pts[8] = {"N","NE","E","SE","S","SW","W","NW"};

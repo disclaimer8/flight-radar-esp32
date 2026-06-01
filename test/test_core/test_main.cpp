@@ -157,6 +157,28 @@ void test_polar_clamps_beyond_range(void) {
     TEST_ASSERT_EQUAL_INT(120, far.y);
 }
 
+void test_fmtDist(void) {
+    TEST_ASSERT_EQUAL_STRING("6 km",   fmtDist(6.0).c_str());
+    TEST_ASSERT_EQUAL_STRING("0 km",   fmtDist(-5.0).c_str());   // clamp low
+    TEST_ASSERT_EQUAL_STRING("999 km", fmtDist(1500.0).c_str()); // clamp high
+}
+
+void test_fmtAlt(void) {
+    Aircraft air = mkAc("X", "A320", 35000.0, false, 100.0, 5.0);
+    TEST_ASSERT_EQUAL_STRING("10668m", fmtAlt(air).c_str()); // 35000ft -> 10668m
+    Aircraft gnd = mkAc("X", "A320", NAN, true, 0.0, 5.0);
+    TEST_ASSERT_EQUAL_STRING("GND", fmtAlt(gnd).c_str());
+    Aircraft unk = mkAc("X", "A320", NAN, false, 0.0, 5.0);
+    TEST_ASSERT_EQUAL_STRING("---", fmtAlt(unk).c_str());
+}
+
+void test_fmtSpeed(void) {
+    Aircraft air = mkAc("X", "A320", 35000.0, false, 453.6, 5.0);
+    TEST_ASSERT_EQUAL_STRING("840", fmtSpeed(air).c_str()); // 453.6kt -> 840km/h
+    Aircraft unk = mkAc("X", "A320", 35000.0, false, NAN, 5.0);
+    TEST_ASSERT_EQUAL_STRING("---", fmtSpeed(unk).c_str());
+}
+
 void test_compass_cardinals(void) {
     TEST_ASSERT_EQUAL_STRING("N",  compassPoint(0.0));
     TEST_ASSERT_EQUAL_STRING("NE", compassPoint(45.0));
@@ -208,6 +230,9 @@ int main(int, char **) {
     RUN_TEST(test_formatLine2_negative_altitude);
     RUN_TEST(test_formatLine2_extreme_values_clamped);
     RUN_TEST(test_parseNearest_malformed_json);
+    RUN_TEST(test_fmtDist);
+    RUN_TEST(test_fmtAlt);
+    RUN_TEST(test_fmtSpeed);
     RUN_TEST(test_compass_cardinals);
     RUN_TEST(test_compass_wraps_and_rounds);
     RUN_TEST(test_polar_center_at_zero_distance);
