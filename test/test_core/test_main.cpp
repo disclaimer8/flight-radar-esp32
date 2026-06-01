@@ -194,6 +194,25 @@ void test_compass_wraps_and_rounds(void) {
     TEST_ASSERT_EQUAL_STRING("NE", compassPoint(30.0)); // rounds to NE
 }
 
+void test_compass_boundaries(void) {
+    // Half-step rounding boundaries: lround(b/45.0) % 8
+    // 22.5 -> lround(0.5)=1, %8=1 -> "NE"
+    TEST_ASSERT_EQUAL_STRING("NE", compassPoint(22.5));
+    // 67.5 -> lround(1.5)=2, %8=2 -> "E"
+    TEST_ASSERT_EQUAL_STRING("E",  compassPoint(67.5));
+    // 337.5 -> lround(7.5)=8, %8=0 -> "N"  (exercises modulo wrap on nonzero index)
+    TEST_ASSERT_EQUAL_STRING("N",  compassPoint(337.5));
+}
+
+void test_polar_off_axis(void) {
+    // 45deg bearing, half range: r=(25/50)*96=48; sin=cos=0.70711
+    // x = lround(120 + 48*0.70711) = lround(153.94) = 154
+    // y = lround(120 - 48*0.70711) = lround(86.06)  = 86
+    ScreenPoint p = polarToXY(45.0, 25.0, 50.0, 120, 120, 96);
+    TEST_ASSERT_EQUAL_INT(154, p.x);
+    TEST_ASSERT_EQUAL_INT(86,  p.y);
+}
+
 void test_bearing_cardinals(void) {
     // From equator origin: north=0, east=90, south=180, west=270
     TEST_ASSERT_FLOAT_WITHIN(0.5, 0.0,   bearingDeg(0.0, 0.0,  1.0,  0.0));
@@ -235,9 +254,11 @@ int main(int, char **) {
     RUN_TEST(test_fmtSpeed);
     RUN_TEST(test_compass_cardinals);
     RUN_TEST(test_compass_wraps_and_rounds);
+    RUN_TEST(test_compass_boundaries);
     RUN_TEST(test_polar_center_at_zero_distance);
     RUN_TEST(test_polar_north_and_east_full_range);
     RUN_TEST(test_polar_clamps_beyond_range);
+    RUN_TEST(test_polar_off_axis);
     RUN_TEST(test_bearing_cardinals);
     RUN_TEST(test_bearing_normalized_range);
     return UNITY_END();

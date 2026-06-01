@@ -36,6 +36,7 @@ inline ScreenPoint polarToXY(double bearing, double distKm, double rangeKm,
 inline std::string fmtDist(double distKm) {
     long km = std::lround(distKm);
     if (km < 0) km = 0;
+    // Intentional sanity cap from the LCD era: distances above ~999 km aren't meaningful here.
     if (km > 999) km = 999;
     char b[16];
     std::snprintf(b, sizeof(b), "%ld km", km);
