@@ -136,6 +136,27 @@ void test_parseNearest_malformed_json(void) {
     TEST_ASSERT_EQUAL_UINT32(0, list.size());
 }
 
+void test_polar_center_at_zero_distance(void) {
+    ScreenPoint p = polarToXY(123.0, 0.0, 50.0, 120, 120, 96);
+    TEST_ASSERT_EQUAL_INT(120, p.x);
+    TEST_ASSERT_EQUAL_INT(120, p.y);
+}
+
+void test_polar_north_and_east_full_range(void) {
+    ScreenPoint n = polarToXY(0.0, 50.0, 50.0, 120, 120, 96); // due north = up
+    TEST_ASSERT_EQUAL_INT(120, n.x);
+    TEST_ASSERT_EQUAL_INT(24,  n.y);
+    ScreenPoint e = polarToXY(90.0, 50.0, 50.0, 120, 120, 96); // due east = right
+    TEST_ASSERT_EQUAL_INT(216, e.x);
+    TEST_ASSERT_EQUAL_INT(120, e.y);
+}
+
+void test_polar_clamps_beyond_range(void) {
+    ScreenPoint far = polarToXY(90.0, 999.0, 50.0, 120, 120, 96); // 999km > 50km range
+    TEST_ASSERT_EQUAL_INT(216, far.x); // pinned to ring edge
+    TEST_ASSERT_EQUAL_INT(120, far.y);
+}
+
 void test_bearing_cardinals(void) {
     // From equator origin: north=0, east=90, south=180, west=270
     TEST_ASSERT_FLOAT_WITHIN(0.5, 0.0,   bearingDeg(0.0, 0.0,  1.0,  0.0));
@@ -172,6 +193,9 @@ int main(int, char **) {
     RUN_TEST(test_formatLine2_negative_altitude);
     RUN_TEST(test_formatLine2_extreme_values_clamped);
     RUN_TEST(test_parseNearest_malformed_json);
+    RUN_TEST(test_polar_center_at_zero_distance);
+    RUN_TEST(test_polar_north_and_east_full_range);
+    RUN_TEST(test_polar_clamps_beyond_range);
     RUN_TEST(test_bearing_cardinals);
     RUN_TEST(test_bearing_normalized_range);
     return UNITY_END();
