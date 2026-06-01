@@ -1,5 +1,6 @@
 #include <unity.h>
 #include "../../src/flight_core.h"
+#include "../../src/render_core.h"
 
 static const char* SAMPLE_JSON =
   "{\"ac\":["
@@ -135,6 +136,20 @@ void test_parseNearest_malformed_json(void) {
     TEST_ASSERT_EQUAL_UINT32(0, list.size());
 }
 
+void test_bearing_cardinals(void) {
+    // From equator origin: north=0, east=90, south=180, west=270
+    TEST_ASSERT_FLOAT_WITHIN(0.5, 0.0,   bearingDeg(0.0, 0.0,  1.0,  0.0));
+    TEST_ASSERT_FLOAT_WITHIN(0.5, 90.0,  bearingDeg(0.0, 0.0,  0.0,  1.0));
+    TEST_ASSERT_FLOAT_WITHIN(0.5, 180.0, bearingDeg(0.0, 0.0, -1.0,  0.0));
+    TEST_ASSERT_FLOAT_WITHIN(0.5, 270.0, bearingDeg(0.0, 0.0,  0.0, -1.0));
+}
+
+void test_bearing_normalized_range(void) {
+    double b = bearingDeg(48.0, 11.0, 47.5, 10.5); // southwest-ish
+    TEST_ASSERT_TRUE(b >= 0.0 && b < 360.0);
+    TEST_ASSERT_TRUE(b > 180.0 && b < 270.0);
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -157,5 +172,7 @@ int main(int, char **) {
     RUN_TEST(test_formatLine2_negative_altitude);
     RUN_TEST(test_formatLine2_extreme_values_clamped);
     RUN_TEST(test_parseNearest_malformed_json);
+    RUN_TEST(test_bearing_cardinals);
+    RUN_TEST(test_bearing_normalized_range);
     return UNITY_END();
 }
