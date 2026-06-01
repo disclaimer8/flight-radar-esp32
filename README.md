@@ -52,6 +52,14 @@ host unit tests under the `native` environment — no hardware needed.
 
 `pio test -e native -f test_core` runs the unit tests (29 cases).
 
+## Documentation
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — module breakdown, data flow,
+  the radar/detail state machine, testing strategy, and how to extend it.
+- [docs/HARDWARE.md](docs/HARDWARE.md) — board specs, pin map, build-flag
+  rationale, flashing, and the bring-up gotchas (the SPI-port boot crash, the
+  CST816S touch handling, native-USB serial, sprite memory).
+
 ## Pin map (ESP32-S3-Touch-LCD-1.28)
 
 GC9A01 LCD over SPI: MOSI 11, SCLK 10, CS 9, DC 8, RST 14, backlight 2.

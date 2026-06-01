@@ -1,30 +1,45 @@
-# Flight Ticker — ESP32 + LCD 1602 (бриф для Claude Code, macOS)
+# Flight Radar — ESP32-S3-Touch-LCD-1.28 (project brief)
 
-Это инструкция для продолжения сборки в **Claude Code на Mac**. Сохрани файл как
-`CLAUDE.md` в корне проекта — Claude Code подхватит его как контекст.
+Live aircraft radar on a round touch display. The firmware polls airplanes.live
+for nearby aircraft and plots them North-up by bearing + distance; a tap opens a
+detail carousel of the nearest flights (swipe to page).
 
-## Цель
+Full docs: [README.md](README.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
+[docs/HARDWARE.md](docs/HARDWARE.md).
 
-Прошить ESP32 так, чтобы он по Wi-Fi опрашивал API airplanes.live по координатам
-наблюдателя, находил ближайшие самолёты и крутил их на текстовом LCD 1602
-(строка 1: позывной + дистанция; строка 2: тип ВС + высота + скорость).
+## Hardware
 
-## Железо
+**Waveshare ESP32-S3-Touch-LCD-1.28**: ESP32-S3R2 (2 MB PSRAM), round GC9A01
+240×240 LCD (SPI), CST816S touch (I2C), QMI8658 IMU (unused). USB-C, native USB.
+Integrated board — no wiring; flash over USB-C.
 
-- **ESP32 DevKit** (generic, board id PlatformIO: `esp32dev`), подключается по micro-USB.
-- **LCD 1602A** (контроллер HD44780), параллельный модуль.
-- **Подключение** (по умолчанию I2C): переходник PCF8574 → VCC=3V3, GND=GND, SDA=GPIO21, SCL=GPIO22.
+## Toolchain (macOS): PlatformIO
 
-## Тулчейн (macOS): PlatformIO
+`brew install platformio`. Everything from the terminal, no Arduino IDE.
+- Tests (host, no hardware): `pio test -e native -f test_core` (29 cases)
+- Build: `pio run -e esp32-s3`
+- Flash: `pio run -e esp32-s3 -t upload` (native USB auto-resets; no BOOT hold)
 
-Весь цикл — из терминала, без Arduino IDE. `brew install platformio`.
+## Code layout
 
-## platformio.ini, грабли и единицы
+Pure, host-testable core + thin Arduino layer:
+- `src/flight_core.h` — parse / haversine / sort (Arduino-free)
+- `src/render_core.h` — bearing / polar projection / compass / formatting (Arduino-free, tested)
+- `src/cst816s.h` — CST816S touch driver
+- `src/flight_ticker.ino` — Wi-Fi/HTTP + TFT_eSPI sprite + radar/detail state machine
 
-Радиус поиска в морских милях (старт: 30). Не опрашивать API чаще 1 раза/сек (в прошивке 15 c).
-Экран пустой → контраст. Иероглифы → адрес I2C 0x27 или 0x3F. Порт не виден → драйвер CP210x/CH34x.
-`No aircraft in range` → норм, увеличь RADIUS_NM. Дистанция/высота на экране в км/метрах.
+Config + secrets in `src/config.h` (copy from `config.example.h`; gitignored).
 
-## Что дальше (по запросу пользователя)
+## Gotchas (see docs/HARDWARE.md for detail)
 
-Азимут «куда смотреть», фильтр по высоте, переход на локальный приём (RTL-SDR + dump1090) вместо API.
+- `-DUSE_FSPI_PORT` is **required** or TFT_eSPI boot-loops on the S3.
+- Touch is read on a falling-edge INT ISR + 300 ms debounce (CST816S sleeps when
+  idle and fires many INT events per touch).
+- Radar is North-up only (no magnetometer on the board).
+- airplanes.live forces HTTPS → `WiFiClientSecure` + `setInsecure()`; poll ≤ 1/s
+  (firmware uses 15 s). `RADIUS_NM` is nautical miles; on-screen distances in km.
+
+## Ideas / backlog
+
+Altitude filter, per-aircraft track vector, switch to local reception
+(RTL-SDR + dump1090) instead of the API, Cyrillic font for labels.
