@@ -157,6 +157,21 @@ void test_polar_clamps_beyond_range(void) {
     TEST_ASSERT_EQUAL_INT(120, far.y);
 }
 
+void test_compass_cardinals(void) {
+    TEST_ASSERT_EQUAL_STRING("N",  compassPoint(0.0));
+    TEST_ASSERT_EQUAL_STRING("NE", compassPoint(45.0));
+    TEST_ASSERT_EQUAL_STRING("E",  compassPoint(90.0));
+    TEST_ASSERT_EQUAL_STRING("S",  compassPoint(180.0));
+    TEST_ASSERT_EQUAL_STRING("W",  compassPoint(270.0));
+    TEST_ASSERT_EQUAL_STRING("NW", compassPoint(315.0));
+}
+
+void test_compass_wraps_and_rounds(void) {
+    TEST_ASSERT_EQUAL_STRING("N", compassPoint(359.0)); // wraps to N
+    TEST_ASSERT_EQUAL_STRING("N", compassPoint(10.0));  // rounds to N
+    TEST_ASSERT_EQUAL_STRING("NE", compassPoint(30.0)); // rounds to NE
+}
+
 void test_bearing_cardinals(void) {
     // From equator origin: north=0, east=90, south=180, west=270
     TEST_ASSERT_FLOAT_WITHIN(0.5, 0.0,   bearingDeg(0.0, 0.0,  1.0,  0.0));
@@ -193,6 +208,8 @@ int main(int, char **) {
     RUN_TEST(test_formatLine2_negative_altitude);
     RUN_TEST(test_formatLine2_extreme_values_clamped);
     RUN_TEST(test_parseNearest_malformed_json);
+    RUN_TEST(test_compass_cardinals);
+    RUN_TEST(test_compass_wraps_and_rounds);
     RUN_TEST(test_polar_center_at_zero_distance);
     RUN_TEST(test_polar_north_and_east_full_range);
     RUN_TEST(test_polar_clamps_beyond_range);

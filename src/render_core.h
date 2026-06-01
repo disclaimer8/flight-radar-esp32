@@ -31,3 +31,11 @@ inline ScreenPoint polarToXY(double bearing, double distKm, double rangeKm,
     p.y = (int)std::lround(cy - r * std::cos(th));
     return p;
 }
+
+// 8-point compass rose label for a bearing in degrees.
+inline const char* compassPoint(double bearing) {
+    static const char* pts[8] = {"N","NE","E","SE","S","SW","W","NW"};
+    double b = std::fmod(bearing + 360.0, 360.0);
+    int idx = ((int)std::lround(b / 45.0)) % 8;
+    return pts[idx];
+}
