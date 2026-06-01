@@ -1,49 +1,79 @@
-# Flight Ticker
+# Flight Radar (ESP32-S3)
 
-ESP32 + 1602 LCD that shows the nearest aircraft from airplanes.live.
+A live aircraft radar on a round touch display. The ESP32 polls
+[airplanes.live](https://airplanes.live) for aircraft near your location and
+plots them on a North-up radar by bearing and distance. Tap the screen to open
+a detail carousel of the nearest flights.
+
+Hardware: **Waveshare ESP32-S3-Touch-LCD-1.28** (round GC9A01 240×240 LCD,
+CST816S capacitive touch, ESP32-S3R2).
+
+## What it shows
+
+- **Radar view** — concentric range rings, a rotating sweep, North at the top,
+  the observer at the center, and a blip per aircraft placed by bearing +
+  distance. The nearest aircraft is highlighted with its callsign. A red dot
+  appears top-right if the last poll failed.
+- **Detail view** (tap to open) — one flight at a time: callsign, type +
+  compass direction, distance, altitude and speed, with page dots.
+
+## Controls
+
+| Gesture | Action |
+|---------|--------|
+| Tap (on radar) | Open detail of the nearest flight |
+| Swipe left / right (in detail) | Next / previous aircraft |
+| Tap or swipe down (in detail) | Back to radar |
+| No touch for 15 s (in detail) | Auto-return to radar |
 
 ## Setup
 
 1. Install PlatformIO Core: `brew install platformio`
-2. `cp src/config.example.h src/config.h` and fill in Wi-Fi (2.4 GHz only),
-   your lat/lon, and `RADIUS_NM`.
+2. `cp src/config.example.h src/config.h` and fill in your Wi-Fi (2.4 GHz only),
+   latitude/longitude, and `RADIUS_NM` (search radius in nautical miles).
+   `config.h` is gitignored — your credentials never reach the repo.
 3. Run the host tests: `pio test -e native -f test_core`
-4. Build: `pio run -e esp32dev`
-5. Find the port: `ls /dev/cu.*` (CH340 → `cu.usbserial-*`, CP2102 → `cu.SLAB_USBtoUART`).
-   No port? Install the CP210x or CH34x driver and reconnect USB.
-6. Flash: `pio run -e esp32dev -t upload`. If upload stalls, hold **BOOT** as it
-   starts "Connecting...".
-7. Monitor: `pio device monitor -b 115200`.
+4. Build: `pio run -e esp32-s3`
+5. Flash: `pio run -e esp32-s3 -t upload` (the S3's native USB auto-resets; no
+   BOOT-button hold needed).
+6. Monitor (optional): `pio device monitor -b 115200`.
 
-## Wiring (parallel HD44780, 4-bit)
+## How it's built
 
-Bare 1602, 16-pin header → ESP32. A 10k pot on VO sets contrast.
+The aircraft logic and rendering math are pure and Arduino-free, so they run as
+host unit tests under the `native` environment — no hardware needed.
 
-| LCD pin | → | ESP32 |
-|---------|---|-------|
-| 1 VSS   | → | GND |
-| 2 VDD   | → | 5V (VIN) |
-| 3 VO    | → | 10k pot wiper (pot ends to 5V and GND) |
-| 4 RS    | → | GPIO19 |
-| 5 RW    | → | GND |
-| 6 E     | → | GPIO23 |
-| 11 D4   | → | GPIO18 |
-| 12 D5   | → | GPIO25 |
-| 13 D6   | → | GPIO26 |
-| 14 D7   | → | GPIO27 |
-| 15 A (BLA) | → | 5V via ~220Ω |
-| 16 K (BLK) | → | GND |
+| File | Responsibility |
+|------|----------------|
+| `src/flight_core.h` | Poll parsing (ArduinoJson), haversine distance, sort by nearest |
+| `src/render_core.h` | Bearing, polar→screen projection, compass points, field formatting (host-tested) |
+| `src/cst816s.h` | Minimal CST816S touch gesture driver |
+| `src/flight_ticker.ino` | Wi-Fi/HTTP, TFT_eSPI sprite rendering, touch + radar/detail state machine |
 
-Pins 7–10 (D0–D3) are left unconnected in 4-bit mode. Pin assignments live in
-`config.h` (`LCD_RS/EN/D4..D7`).
+`pio test -e native -f test_core` runs the unit tests (29 cases).
 
-## Troubleshooting (грабли)
+## Pin map (ESP32-S3-Touch-LCD-1.28)
 
-- **Backlight on, screen blank or full white blocks** → contrast. Turn the VO pot.
-  No pot? Tie VO to GND through ~1k (or directly) for high contrast.
-- **Garbage characters** → check D4–D7 / RS / E wiring order and a solid common GND.
-  If still garbled, try powering VDD from 3V3 instead of 5V (matches the ESP32's
-  3.3V logic levels).
-- **Port not visible** → missing CP210x/CH34x driver, or a charge-only USB cable.
-- **`No aircraft`** → normal when the sky is empty; raise `RADIUS_NM` to test.
-- **API limit** → don't poll faster than 1 req/s (firmware uses 15 s).
+GC9A01 LCD over SPI: MOSI 11, SCLK 10, CS 9, DC 8, RST 14, backlight 2.
+CST816S touch over I2C: SDA 6, SCL 7, INT 5, RST 13.
+LCD pins are configured via `build_flags` in `platformio.ini`; touch pins in
+`config.h`.
+
+## Notes
+
+- **North-up only.** The board's IMU has no magnetometer, so the radar can't
+  rotate to physical heading. Top of screen = geographic North; the per-aircraft
+  arrow is the bearing from your coordinates.
+- **`-DUSE_FSPI_PORT` is required.** Without it, TFT_eSPI's default `SPI_PORT`
+  on the S3 misresolves and the board boot-loops (StoreProhibited) on the first
+  display command.
+- **Touch is INT-driven.** The CST816S is read on a falling-edge interrupt with
+  a short debounce — it emits many INT events per touch, so one physical tap maps
+  to one action.
+- airplanes.live forces HTTPS (Cloudflare 301); the firmware uses
+  `WiFiClientSecure` with `setInsecure()` for this public read-only data.
+
+## Data
+
+Aircraft data from [airplanes.live](https://airplanes.live) (rate limit 1 req/s;
+the firmware polls every 15 s).
