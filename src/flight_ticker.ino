@@ -14,6 +14,9 @@ TFT_eSprite fb  = TFT_eSprite(&tft);   // full-screen 240x240 framebuffer
 CST816S     touch(TOUCH_SDA, TOUCH_SCL, TOUCH_RST, TOUCH_INT);
 
 static const int CX = 120, CY = 120, MAXR = 100;
+// The CST816S emits many INT events per physical touch (down/move/up), and latches
+// the gesture across them. Collapse one touch into one action with a short cooldown.
+static const unsigned long TOUCH_DEBOUNCE_MS = 300;
 
 std::vector<Aircraft> g_cache;
 unsigned long g_lastPoll  = 0;
@@ -23,7 +26,12 @@ bool g_stale = false;
 enum View { RADAR, DETAIL };
 View    g_view = RADAR;
 size_t  g_idx  = 0;
-uint8_t g_lastGesture = TG_NONE;
+
+// Touch INT latch: the CST816S pulses INT briefly on a touch event, too short to
+// catch by polling the level each frame. A FALLING-edge ISR latches it; the loop
+// reads the gesture once per event. Idle = no edge = no I2C, so the radar stays smooth.
+volatile bool g_touchEvent = false;
+void IRAM_ATTR onTouchISR() { g_touchEvent = true; }
 
 static double rangeKm() { return RADIUS_NM * 1.852; }
 
@@ -163,11 +171,16 @@ void drawDetail() {
 }
 
 void handleTouch() {
+    // Only touch the I2C bus when the ISR latched an INT edge (a real touch event).
+    // Idle: no edge -> no bus read -> radar stays smooth. One edge per touch also
+    // re-arms repeated same-direction swipes cleanly.
+    if (!g_touchEvent) return;
+    g_touchEvent = false;
+    unsigned long now = millis();
+    if (now - g_lastTouch < TOUCH_DEBOUNCE_MS) return;  // ignore the rest of this touch's event burst
     uint8_t g = touch.readGesture();
-    if (g == g_lastGesture) return;   // edge-trigger: act once per gesture
-    g_lastGesture = g;
     if (g == TG_NONE) return;
-    g_lastTouch = millis();
+    g_lastTouch = now;
 
     if (g_view == RADAR) {
         if (g == TG_CLICK) { g_view = DETAIL; g_idx = 0; }
@@ -190,6 +203,7 @@ void setup() {
     fb.setColorDepth(16);
     if (!fb.createSprite(240, 240)) Serial.println("sprite alloc failed");
     touch.begin();
+    attachInterrupt(digitalPinToInterrupt(TOUCH_INT), onTouchISR, FALLING);
 
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(TFT_GREEN, TFT_BLACK);
