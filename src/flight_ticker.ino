@@ -30,7 +30,7 @@ enum Source { SRC_NONE, SRC_WIFI, SRC_BLE };
 Source        g_source    = SRC_NONE;
 double        g_centerLat = MY_LAT;   // radar center: config in Wi-Fi mode, packet GPS in BLE mode
 double        g_centerLon = MY_LON;
-unsigned long g_bleLastRx = 0;        // millis of last accepted BLE packet (set in Task 4)
+unsigned long g_bleLastRx = 0;        // millis of last accepted BLE packet
 
 enum View { RADAR, DETAIL };
 View    g_view = RADAR;
