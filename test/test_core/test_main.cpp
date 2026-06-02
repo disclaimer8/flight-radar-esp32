@@ -1,6 +1,8 @@
 #include <unity.h>
 #include "../../src/flight_core.h"
 #include "../../src/render_core.h"
+#include "../../src/ble_core.h"
+#include <cstring>
 
 static const char* SAMPLE_JSON =
   "{\"ac\":["
@@ -227,6 +229,103 @@ void test_bearing_normalized_range(void) {
     TEST_ASSERT_TRUE(b > 180.0 && b < 270.0);
 }
 
+// --- BLE packet test helpers ---
+static void blePutF32(std::vector<uint8_t>& v, float f) {
+    uint8_t b[4]; std::memcpy(b, &f, 4); v.insert(v.end(), b, b + 4);
+}
+static void blePutI32(std::vector<uint8_t>& v, int32_t x) {
+    uint8_t b[4]; std::memcpy(b, &x, 4); v.insert(v.end(), b, b + 4);
+}
+static void blePutI16(std::vector<uint8_t>& v, int16_t x) {
+    uint8_t b[2]; std::memcpy(b, &x, 2); v.insert(v.end(), b, b + 2);
+}
+static void blePutField(std::vector<uint8_t>& v, const char* s, size_t n) {
+    size_t L = std::strlen(s);
+    for (size_t i = 0; i < n; i++) v.push_back(i < L ? (uint8_t)s[i] : (uint8_t)' ');
+}
+static std::vector<uint8_t> bleHeader(uint8_t count, float clat, float clon) {
+    std::vector<uint8_t> v;
+    v.push_back(BLE_MAGIC0); v.push_back(BLE_MAGIC1);
+    v.push_back(BLE_VERSION); v.push_back(count);
+    blePutF32(v, clat); blePutF32(v, clon);
+    return v;
+}
+static void bleAddRecord(std::vector<uint8_t>& v, const char* cs, const char* ty,
+                         float lat, float lon, int32_t alt, int16_t gs, uint8_t flags) {
+    blePutField(v, cs, 8); blePutField(v, ty, 4);
+    blePutF32(v, lat); blePutF32(v, lon);
+    blePutI32(v, alt); blePutI16(v, gs);
+    v.push_back(flags); v.push_back(0);
+}
+
+void test_ble_valid_two_aircraft(void) {
+    // Center 48,11. Record A is farther (48.5), B is nearer (48.1).
+    std::vector<uint8_t> v = bleHeader(2, 48.0f, 11.0f);
+    bleAddRecord(v, "DLH4AB", "A320", 48.5f, 11.0f, 35000,  453, BLE_FLAG_ALT_VALID | BLE_FLAG_GS_VALID);
+    bleAddRecord(v, "RYR9XZ", "B738", 48.1f, 11.0f, 12000,  380, BLE_FLAG_ALT_VALID | BLE_FLAG_GS_VALID);
+    BlePacket p = parseBlePacket(v.data(), v.size(), 5);
+    TEST_ASSERT_TRUE(p.ok);
+    TEST_ASSERT_FLOAT_WITHIN(0.001, 48.0, p.centerLat);
+    TEST_ASSERT_FLOAT_WITHIN(0.001, 11.0, p.centerLon);
+    TEST_ASSERT_EQUAL_UINT32(2, p.aircraft.size());
+    TEST_ASSERT_EQUAL_STRING("RYR9XZ", p.aircraft[0].callsign.c_str()); // nearest first
+    TEST_ASSERT_EQUAL_STRING("DLH4AB", p.aircraft[1].callsign.c_str());
+    TEST_ASSERT_TRUE(p.aircraft[0].distKm < p.aircraft[1].distKm);
+    TEST_ASSERT_EQUAL_STRING("B738", p.aircraft[0].type.c_str());
+    TEST_ASSERT_FLOAT_WITHIN(0.5, 12000.0, p.aircraft[0].altFt);
+    TEST_ASSERT_FLOAT_WITHIN(0.5, 380.0, p.aircraft[0].gsKt);
+}
+
+void test_ble_bad_magic(void) {
+    std::vector<uint8_t> v = bleHeader(0, 48.0f, 11.0f);
+    v[0] = 0x00;
+    BlePacket p = parseBlePacket(v.data(), v.size(), 5);
+    TEST_ASSERT_FALSE(p.ok);
+}
+
+void test_ble_bad_version(void) {
+    std::vector<uint8_t> v = bleHeader(0, 48.0f, 11.0f);
+    v[2] = 99;
+    BlePacket p = parseBlePacket(v.data(), v.size(), 5);
+    TEST_ASSERT_FALSE(p.ok);
+}
+
+void test_ble_count_overflow(void) {
+    std::vector<uint8_t> v = bleHeader(17, 48.0f, 11.0f); // > BLE_MAX_AIRCRAFT
+    BlePacket p = parseBlePacket(v.data(), v.size(), 5);
+    TEST_ASSERT_FALSE(p.ok);
+}
+
+void test_ble_length_mismatch(void) {
+    // count says 2 but only one record present
+    std::vector<uint8_t> v = bleHeader(2, 48.0f, 11.0f);
+    bleAddRecord(v, "AAA", "A320", 48.1f, 11.0f, 10000, 300, BLE_FLAG_ALT_VALID);
+    BlePacket p = parseBlePacket(v.data(), v.size(), 5);
+    TEST_ASSERT_FALSE(p.ok);
+}
+
+void test_ble_flags(void) {
+    std::vector<uint8_t> v = bleHeader(1, 0.0f, 0.0f);
+    bleAddRecord(v, "GND1", "B772", 0.0f, 0.1f, 0, 5, BLE_FLAG_GROUND); // ground, alt/gs invalid
+    BlePacket p = parseBlePacket(v.data(), v.size(), 5);
+    TEST_ASSERT_TRUE(p.ok);
+    TEST_ASSERT_TRUE(p.aircraft[0].onGround);
+    TEST_ASSERT_TRUE(std::isnan(p.aircraft[0].altFt));
+    TEST_ASSERT_TRUE(std::isnan(p.aircraft[0].gsKt));
+}
+
+void test_ble_caps_to_maxN(void) {
+    std::vector<uint8_t> v = bleHeader(3, 0.0f, 0.0f);
+    bleAddRecord(v, "C", "A320", 0.0f, 3.0f, 1, 1, BLE_FLAG_ALT_VALID); // farthest
+    bleAddRecord(v, "A", "A320", 0.0f, 1.0f, 1, 1, BLE_FLAG_ALT_VALID); // nearest
+    bleAddRecord(v, "B", "A320", 0.0f, 2.0f, 1, 1, BLE_FLAG_ALT_VALID);
+    BlePacket p = parseBlePacket(v.data(), v.size(), 2);
+    TEST_ASSERT_TRUE(p.ok);
+    TEST_ASSERT_EQUAL_UINT32(2, p.aircraft.size());        // capped
+    TEST_ASSERT_EQUAL_STRING("A", p.aircraft[0].callsign.c_str()); // two nearest kept
+    TEST_ASSERT_EQUAL_STRING("B", p.aircraft[1].callsign.c_str());
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -261,5 +360,12 @@ int main(int, char **) {
     RUN_TEST(test_polar_off_axis);
     RUN_TEST(test_bearing_cardinals);
     RUN_TEST(test_bearing_normalized_range);
+    RUN_TEST(test_ble_valid_two_aircraft);
+    RUN_TEST(test_ble_bad_magic);
+    RUN_TEST(test_ble_bad_version);
+    RUN_TEST(test_ble_count_overflow);
+    RUN_TEST(test_ble_length_mismatch);
+    RUN_TEST(test_ble_flags);
+    RUN_TEST(test_ble_caps_to_maxN);
     return UNITY_END();
 }
