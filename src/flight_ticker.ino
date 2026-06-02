@@ -8,6 +8,8 @@
 #include "flight_core.h"
 #include "render_core.h"
 #include "cst816s.h"
+#include <NimBLEDevice.h>
+#include "ble_core.h"
 
 TFT_eSPI    tft = TFT_eSPI();
 TFT_eSprite fb  = TFT_eSprite(&tft);   // full-screen 240x240 framebuffer
@@ -39,6 +41,28 @@ size_t  g_idx  = 0;
 // reads the gesture once per event. Idle = no edge = no I2C, so the radar stays smooth.
 volatile bool g_touchEvent = false;
 void IRAM_ATTR onTouchISR() { g_touchEvent = true; }
+
+// BLE ingest. The phone writes one binary packet (see ble_core.h) to this
+// characteristic. The write callback (BLE task context) only copies bytes + sets
+// a flag; loop() parses and updates g_cache, to avoid racing the render path.
+static const char* BLE_DEVICE_NAME  = "FlightRadar";
+static const char* BLE_SERVICE_UUID = "f1a90001-7e1d-4c2a-9b3f-1a2b3c4d5e6f";
+static const char* BLE_CHAR_UUID    = "f1a90002-7e1d-4c2a-9b3f-1a2b3c4d5e6f";
+
+static uint8_t  g_bleBuf[BLE_MAX_PACKET];
+volatile size_t g_bleLen = 0;
+volatile bool   g_blePacketReady = false;
+
+class IngestCallbacks : public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic* c) override {
+        std::string v = c->getValue();
+        size_t n = v.size();
+        if (n > BLE_MAX_PACKET) n = BLE_MAX_PACKET;
+        std::memcpy(g_bleBuf, v.data(), n);
+        g_bleLen = n;
+        g_blePacketReady = true;
+    }
+};
 
 static double rangeKm() { return RADIUS_NM * 1.852; }
 
@@ -226,6 +250,19 @@ void setup() {
     touch.begin();
     attachInterrupt(digitalPinToInterrupt(TOUCH_INT), onTouchISR, FALLING);
 
+    NimBLEDevice::init(BLE_DEVICE_NAME);
+    NimBLEDevice::setMTU(517);
+    NimBLEServer* bleServer = NimBLEDevice::createServer();
+    NimBLEService* bleSvc = bleServer->createService(BLE_SERVICE_UUID);
+    NimBLECharacteristic* bleCh = bleSvc->createCharacteristic(
+        BLE_CHAR_UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
+    bleCh->setCallbacks(new IngestCallbacks());
+    bleSvc->start();
+    NimBLEAdvertising* bleAdv = NimBLEDevice::getAdvertising();
+    bleAdv->addServiceUUID(BLE_SERVICE_UUID);
+    bleAdv->setName(BLE_DEVICE_NAME);
+    bleAdv->start();
+
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(TFT_GREEN, TFT_BLACK);
     tft.drawString("WiFi...", CX, CY, 4);
@@ -238,6 +275,17 @@ void setup() {
 
 void loop() {
     unsigned long now = millis();
+    if (g_blePacketReady) {
+        g_blePacketReady = false;
+        BlePacket pkt = parseBlePacket(g_bleBuf, g_bleLen, MAX_AIRCRAFT);
+        if (pkt.ok) {
+            g_cache     = pkt.aircraft;
+            g_centerLat = pkt.centerLat;
+            g_centerLon = pkt.centerLon;
+            if (g_idx >= g_cache.size()) g_idx = 0;
+            g_bleLastRx = millis();
+        }
+    }
     // pollApi() blocks up to ~8s (HTTP timeout); the sweep freezes and touches are
     // ignored for that window. Acceptable on this single-threaded firmware — not a bug.
     if (now - g_lastPoll >= POLL_INTERVAL_MS) {
