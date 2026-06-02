@@ -16,6 +16,7 @@
 #define MAX_AIRCRAFT      10      // how many nearest to show on radar / page through
 #define IDLE_RETURN_MS    15000   // detail view auto-returns to radar after this idle
 #define SWEEP_PERIOD_MS   4000    // radar sweep: ms per full revolution
+#define BLE_FRESHNESS_MS  30000   // BLE-fed data is considered live for this long
 
 // --- Touch CST816S (I2C) on ESP32-S3-Touch-LCD-1.28 ---
 #define TOUCH_SDA  6
