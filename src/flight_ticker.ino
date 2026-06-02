@@ -238,9 +238,8 @@ void setup() {
 
 void loop() {
     unsigned long now = millis();
-    // pollApi() blocks up to ~8s (HTTP timeout), or ~20s during a WiFi reconnect;
-    // the sweep freezes and touches are ignored for that window. Acceptable on this
-    // single-threaded firmware — not a bug.
+    // pollApi() blocks up to ~8s (HTTP timeout); the sweep freezes and touches are
+    // ignored for that window. Acceptable on this single-threaded firmware — not a bug.
     if (now - g_lastPoll >= POLL_INTERVAL_MS) {
         if (WiFi.status() == WL_CONNECTED) pollApi();   // skip when offline; no blocking reconnect
         g_lastPoll = now;
