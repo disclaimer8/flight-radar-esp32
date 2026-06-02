@@ -8,6 +8,7 @@
 #include "flight_core.h"   // Aircraft, haversineKm
 
 // Compact BLE wire protocol (little-endian; both ESP32 and host are LE).
+static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "BLE wire format assumes little-endian");
 constexpr uint8_t BLE_MAGIC0       = 0x46; // 'F'
 constexpr uint8_t BLE_MAGIC1       = 0x52; // 'R'
 constexpr uint8_t BLE_VERSION      = 1;
