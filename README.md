@@ -16,6 +16,9 @@ CST816S capacitive touch, ESP32-S3R2).
   appears top-right if the last poll failed.
 - **Detail view** (tap to open) — one flight at a time: callsign, type +
   compass direction, distance, altitude and speed, with page dots.
+- **Source indicator** (bottom-center): green **W** = Wi-Fi live, red **W** =
+  Wi-Fi up but the API poll is failing, cyan **B** = data coming over BLE from a
+  phone, red **NO LINK** = no fresh data from either source.
 
 ## Controls
 
@@ -50,7 +53,33 @@ host unit tests under the `native` environment — no hardware needed.
 | `src/cst816s.h` | Minimal CST816S touch gesture driver |
 | `src/flight_ticker.ino` | Wi-Fi/HTTP, TFT_eSPI sprite rendering, touch + radar/detail state machine |
 
-`pio test -e native -f test_core` runs the unit tests (29 cases).
+`pio test -e native -f test_core` runs the unit tests (36 cases, including the
+BLE packet parser).
+
+## BLE fallback (optional)
+
+Wi-Fi is the primary data path. As a fallback, the device also runs a BLE
+peripheral (`src/ble_core.h` + the NimBLE setup in the `.ino`): a phone
+companion can write one compact binary packet of nearby aircraft, and the radar
+re-centers on the packet's GPS and plots them. BLE data is used **only when
+Wi-Fi is down** and the last packet is still fresh (≤ `BLE_FRESHNESS_MS`,
+default 30 s); after that the screen shows **NO LINK**. The packet format and
+GATT UUIDs are documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+> The phone companion app isn't built yet — `scripts/ble_send.py` is the only
+> sender today.
+
+Test it against a flashed device from your laptop:
+
+```bash
+pip install bleak
+python3 scripts/ble_send.py   # sends one sample 3-aircraft packet (near Lisbon)
+```
+
+The device advertises as `FlightRadar`. On macOS, grant your terminal Bluetooth
+permission (System Settings → Privacy). The 30 s freshness window expires fast,
+so trigger the send right before you look at the screen, or widen
+`BLE_FRESHNESS_MS` while testing.
 
 ## Documentation
 

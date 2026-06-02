@@ -8,11 +8,13 @@ environment. The `.ino` only does I/O: Wi-Fi, HTTP, the display, touch, and the
 state machine that ties them together.
 
 ```
-            airplanes.live (HTTPS JSON)
-                     │
-                     ▼
-   flight_core.h  ──────────────  parse + distance + sort   (pure, tested)
-                     │  vector<Aircraft> (nearest first, capped)
+   airplanes.live (HTTPS JSON)        phone companion (BLE write, fallback)
+                     │                          │
+   flight_core.h  ───┤              ble_core.h ─┤   parse binary packet
+   parse+dist+sort   │              (pure, tested)  + dist + sort
+                     ▼                          ▼
+                  vector<Aircraft> (nearest first, capped)
+                     │   ← source arbitration: Wi-Fi primary, BLE fallback
                      ▼
    render_core.h  ──────────────  bearing + projection + text (pure, tested)
                      │  screen coords + display strings
@@ -44,9 +46,19 @@ state machine that ties them together.
   ground/NaN handling), reused units from `flight_core.h`.
 
 Keeping these pure is what makes the project testable: see
-`test/test_core/test_main.cpp` (29 cases — cardinal bearings, projection
+`test/test_core/test_main.cpp` (36 cases — cardinal bearings, projection
 clamping and off-axis geometry, compass rounding boundaries, formatter edge
-cases, plus the original parse/sort/distance tests).
+cases, the original parse/sort/distance tests, plus the BLE packet parser).
+
+### `src/ble_core.h` — BLE wire protocol + parser (pure, Arduino-free, host-tested)
+- `parseBlePacket(buf, len, maxN)` → `BlePacket` — decodes one binary packet
+  (format below), fills each aircraft's `distKm` via `haversineKm` from the
+  packet's center, sorts nearest-first, and caps to `maxN`. Returns
+  `ok = false` on any validation failure (bad magic/version, count over the
+  cap, or a length that doesn't match `header + count·record`).
+- Like `flight_core.h`, this is pure and runs under `native` (7 of the 36
+  cases: valid decode, bad magic, bad version, count overflow, length mismatch,
+  flag handling, and cap-to-maxN).
 
 ### `src/cst816s.h` — touch driver (Arduino)
 Minimal I2C driver for the CST816S capacitive controller (address `0x15`). Reads
@@ -63,6 +75,9 @@ error, so a missing/asleep chip never blocks rendering.
   `drawRadar()` and `drawDetail()` are the two renderers.
 - **Touch** — a falling-edge ISR latches INT events; `handleTouch()` reads the
   gesture once per event with a 300 ms debounce (see Hardware notes for why).
+- **BLE ingest** — a NimBLE peripheral (`IngestCallbacks::onWrite`) receives
+  binary packets from a phone; the callback only buffers the bytes and sets a
+  flag, while `loop()` does the parse. See "BLE data path" below.
 - **State machine** — see below.
 
 ## Data flow per poll
@@ -76,6 +91,61 @@ error, so a missing/asleep chip never blocks rendering.
 
 Rendering reads `g_cache` every frame independently of the poll, so the sweep
 animates smoothly between polls.
+
+## BLE data path (fallback)
+
+Wi-Fi is primary; BLE is a fallback for when the device has no Wi-Fi (e.g. away
+from a known network, fed by a phone over Bluetooth instead). A phone companion
+writes one compact binary packet to a GATT characteristic; the radar re-centers
+on the packet's GPS and plots its aircraft.
+
+**GATT** (NimBLE peripheral, always advertising, open — no pairing, v1):
+- Device name: `FlightRadar`
+- Service UUID: `f1a90001-7e1d-4c2a-9b3f-1a2b3c4d5e6f`
+- One write characteristic (`WRITE | WRITE_NR`):
+  `f1a90002-7e1d-4c2a-9b3f-1a2b3c4d5e6f`
+
+**Wire format** (little-endian; both ESP32 and host are LE). A 12-byte header
+followed by `count` × 28-byte records:
+
+| Header (12 B) | Field | Bytes |
+|---|---|---|
+| `0` | magic `0x46 0x52` (`'F' 'R'`) | 2 |
+| `2` | version (`1`) | 1 |
+| `3` | count (uint8, ≤ 16) | 1 |
+| `4` | center lat (float32) | 4 |
+| `8` | center lon (float32) | 4 |
+
+| Record (28 B) | Field | Bytes |
+|---|---|---|
+| `0` | callsign, ASCII, space-padded | 8 |
+| `8` | type, ASCII, space-padded | 4 |
+| `12` | lat (float32) | 4 |
+| `16` | lon (float32) | 4 |
+| `20` | altitude ft (int32) | 4 |
+| `24` | ground speed kt (int16) | 2 |
+| `26` | flags (uint8) | 1 |
+| `27` | pad | 1 |
+
+Flag bits: `GROUND = 0x01`, `ALT_VALID = 0x02`, `GS_VALID = 0x04`. When a
+`*_VALID` bit is clear, the parser stores `NaN` for that field and the UI shows
+it as N/A. Up to 16 aircraft fit on the wire; the display caps to
+`MAX_AIRCRAFT` (10). `parseBlePacket` validates magic/version/count/length,
+fills distance, sorts nearest-first, and caps — see `src/ble_core.h`.
+
+**Source arbitration** (in `loop()`, every frame): Wi-Fi wins whenever it's
+connected; otherwise BLE is used if a packet arrived within `BLE_FRESHNESS_MS`
+(default 30 s); otherwise the source is "none". A `g_bleLastRx != 0` guard keeps
+BLE dormant until a real packet arrives (so an uninitialized timestamp at boot
+isn't read as "fresh"). The bottom-center indicator reflects the live source:
+green `W` (Wi-Fi), red `W` (Wi-Fi up, poll failing), cyan `B` (BLE), red
+`NO LINK`.
+
+**Concurrency.** The BLE write callback runs in the NimBLE task. It does the
+minimum: copy the bytes into a buffer and set `g_blePacketReady`. `loop()` (the
+same single thread that renders) does the actual `parseBlePacket` and updates
+`g_cache` / the radar center. So the render path never races the BLE task — no
+locking needed, the flag is the handoff.
 
 ## State machine
 
@@ -99,7 +169,9 @@ animates smoothly between polls.
 Tunables live in `src/config.h` (copied from `config.example.h`, gitignored):
 Wi-Fi credentials, observer `MY_LAT`/`MY_LON`, `RADIUS_NM` (search radius, also
 drives the radar range in km), `POLL_INTERVAL_MS`, `MAX_AIRCRAFT` (blips +
-carousel length), `IDLE_RETURN_MS`, `SWEEP_PERIOD_MS`, and the touch pins.
+carousel length), `IDLE_RETURN_MS`, `SWEEP_PERIOD_MS`, `BLE_FRESHNESS_MS` (how
+long BLE-fed data counts as live before falling back to `NO LINK`), and the
+touch pins.
 
 ## Extending
 

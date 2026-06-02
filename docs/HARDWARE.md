@@ -85,10 +85,32 @@ misses the early boot output. During bring-up, an on-screen debug overlay
 
 ### Sprite memory
 The 240×240×16-bit framebuffer is ~115 KB, allocated from internal RAM at boot.
-It fits comfortably on the S3R2 alongside Wi-Fi/TLS. If you ever hit a heap
-problem (e.g. `sprite alloc failed` or a crash on the first poll), drop the
-sprite to 8-bit: `fb.setColorDepth(8)` in `setup()` (~58 KB; TFT_eSPI converts
-the 16-bit color constants automatically).
+It fits comfortably on the S3R2 alongside Wi-Fi/TLS **and** the NimBLE stack —
+all three coexist in internal SRAM without a crash (verified on device), so the
+8-bit fallback below isn't needed in practice. If you ever do hit a heap problem
+(e.g. `sprite alloc failed` or a crash on the first poll), drop the sprite to
+8-bit: `fb.setColorDepth(8)` in `setup()` (~58 KB; TFT_eSPI converts the 16-bit
+color constants automatically).
+
+## BLE radio (fallback data path)
+
+The ESP32-S3's radio runs BLE alongside Wi-Fi. The firmware brings up a NimBLE
+peripheral (`h2zero/NimBLE-Arduino@^1.4.1`, the lighter 1.x stack) advertising
+as `FlightRadar`, so a phone can write aircraft packets when Wi-Fi is
+unavailable. Wi-Fi (2.4 GHz) and BLE share the one radio and coexist fine here —
+the BLE path is low-duty (one short write at a time), and as noted above the
+NimBLE stack fits in SRAM next to the framebuffer and the TLS poll. The protocol
+and source arbitration are in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+> NimBLE 1.x uses the single-argument `onWrite(NimBLECharacteristic*)` callback
+> signature; the 2.x API changed it. Pin to `^1.4.1` to match the firmware.
+
+### Testing gotcha: the freshness window is short
+BLE-fed data is only "live" for `BLE_FRESHNESS_MS` (default 30 s); after that the
+radar shows `NO LINK` even though BLE is still connected. When testing manually
+with `scripts/ble_send.py`, either send the packet right before you look at the
+screen, or temporarily widen `BLE_FRESHNESS_MS` in `config.h` — otherwise the
+window can expire before you've finished reading the device's serial log.
 
 ## Constraint: North-up only
 
