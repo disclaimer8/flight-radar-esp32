@@ -43,7 +43,9 @@ async def main():
             ("TAP812", "A320", 38.72, -9.40, 35000, 450, FLAG_ALT_VALID | FLAG_GS_VALID),
             ("ABC123", "B772", 38.70, -9.10, 0, 5, FLAG_GROUND),
         ]
-        await client.write_gatt_char(CHAR_UUID, _packet(clat, clon, aircraft), response=False)
+        # Write WITH response: verified on-device, and a long write (prepared) reliably
+        # carries the full packet (up to BLE_MAX_PACKET) regardless of negotiated MTU.
+        await client.write_gatt_char(CHAR_UUID, _packet(clat, clon, aircraft), response=True)
         print(f"sent {len(aircraft)} aircraft to {DEVICE_NAME}")
 
 
