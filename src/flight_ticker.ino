@@ -23,6 +23,13 @@ unsigned long g_lastPoll  = 0;
 unsigned long g_lastTouch = 0;
 bool g_stale = false;
 
+// Data source arbitration: Wi-Fi is primary; BLE (phone gateway) is the fallback.
+enum Source { SRC_NONE, SRC_WIFI, SRC_BLE };
+Source        g_source    = SRC_NONE;
+double        g_centerLat = MY_LAT;   // radar center: config in Wi-Fi mode, packet GPS in BLE mode
+double        g_centerLon = MY_LON;
+unsigned long g_bleLastRx = 0;        // millis of last accepted BLE packet (set in Task 4)
+
 enum View { RADAR, DETAIL };
 View    g_view = RADAR;
 size_t  g_idx  = 0;
@@ -37,6 +44,7 @@ static double rangeKm() { return RADIUS_NM * 1.852; }
 
 void connectWifi() {
     WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(true);   // reconnect in the background; loop() never blocks on it
     WiFi.begin(WIFI_SSID, WIFI_PASS);
     unsigned long start = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) {
@@ -48,7 +56,7 @@ void connectWifi() {
 }
 
 void pollApi() {
-    if (WiFi.status() != WL_CONNECTED) { connectWifi(); if (WiFi.status() != WL_CONNECTED) { g_stale = true; return; } }
+    // Called only when WiFi is connected (see loop()). No blocking reconnect here.
 
     char url[160];
     std::snprintf(url, sizeof(url),
@@ -69,6 +77,7 @@ void pollApi() {
         String payload = http.getString();
         g_cache = parseNearest(std::string(payload.c_str()), MY_LAT, MY_LON, MAX_AIRCRAFT);
         if (g_idx >= g_cache.size()) g_idx = 0;
+        g_centerLat = MY_LAT; g_centerLon = MY_LON;
         g_stale = false;
         Serial.printf("poll ok: %u aircraft\n", (unsigned)g_cache.size());
     } else {
@@ -101,7 +110,7 @@ void drawRadar() {
     // blips
     for (size_t i = 0; i < g_cache.size(); i++) {
         const Aircraft& ac = g_cache[i];
-        double b = bearingDeg(MY_LAT, MY_LON, ac.lat, ac.lon);
+        double b = bearingDeg(g_centerLat, g_centerLon, ac.lat, ac.lon);
         ScreenPoint p = polarToXY(b, ac.distKm, rangeKm(), CX, CY, MAXR);
         if (i == 0) {
             fb.fillCircle(p.x, p.y, 4, TFT_YELLOW);
@@ -123,7 +132,19 @@ void drawRadar() {
         fb.setTextColor(TFT_DARKGREY, TFT_BLACK);
         fb.drawString("NO TRAFFIC", CX, CY + 8, 2);
     }
-    if (g_stale) fb.fillCircle(228, 12, 4, TFT_RED);
+    // Source indicator at bottom-center (inside the round panel):
+    //   green W = Wi-Fi, red W = Wi-Fi poll failing, cyan B = BLE/phone, red NO LINK = no data.
+    fb.setTextDatum(BC_DATUM);
+    if (g_source == SRC_WIFI) {
+        fb.setTextColor(g_stale ? TFT_RED : TFT_GREEN, TFT_BLACK);
+        fb.drawString("W", CX, 236, 2);
+    } else if (g_source == SRC_BLE) {
+        fb.setTextColor(TFT_CYAN, TFT_BLACK);
+        fb.drawString("B", CX, 236, 2);
+    } else {
+        fb.setTextColor(TFT_RED, TFT_BLACK);
+        fb.drawString("NO LINK", CX, 236, 2);
+    }
 
     fb.pushSprite(0, 0);
 }
@@ -140,7 +161,7 @@ void drawDetail() {
     fb.setTextColor(TFT_CYAN, TFT_BLACK);
     fb.drawString(cs.c_str(), CX, 66, 4);
 
-    double b = bearingDeg(MY_LAT, MY_LON, ac.lat, ac.lon);
+    double b = bearingDeg(g_centerLat, g_centerLon, ac.lat, ac.lon);
     std::string sub = (ac.type.empty() ? "----" : ac.type);
     sub += "  ";
     sub += compassPoint(b);
@@ -220,7 +241,17 @@ void loop() {
     // pollApi() blocks up to ~8s (HTTP timeout), or ~20s during a WiFi reconnect;
     // the sweep freezes and touches are ignored for that window. Acceptable on this
     // single-threaded firmware — not a bug.
-    if (now - g_lastPoll >= POLL_INTERVAL_MS) { pollApi(); g_lastPoll = now; }
+    if (now - g_lastPoll >= POLL_INTERVAL_MS) {
+        if (WiFi.status() == WL_CONNECTED) pollApi();   // skip when offline; no blocking reconnect
+        g_lastPoll = now;
+    }
+
+    // Source arbitration: Wi-Fi wins when connected; else BLE if fresh; else nothing.
+    // g_bleLastRx != 0 gate keeps BLE dormant until a real packet arrives (at boot
+    // now < BLE_FRESHNESS_MS would otherwise read as "fresh" with no data).
+    if (WiFi.status() == WL_CONNECTED)                                  g_source = SRC_WIFI;
+    else if (g_bleLastRx != 0 && now - g_bleLastRx <= BLE_FRESHNESS_MS) g_source = SRC_BLE;
+    else                                                               g_source = SRC_NONE;
 
     handleTouch();
     if (g_view == DETAIL && now - g_lastTouch >= IDLE_RETURN_MS) g_view = RADAR;
