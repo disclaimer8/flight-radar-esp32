@@ -252,13 +252,15 @@ static std::vector<uint8_t> bleHeader(uint8_t count, float clat, float clon) {
 }
 static void bleAddRecord(std::vector<uint8_t>& v, const char* cs, const char* ty,
                          float lat, float lon, int32_t alt, int16_t gs, uint8_t flags,
-                         int16_t track = 0, uint16_t squawk = 0) {
+                         int16_t track = 0, uint16_t squawk = 0,
+                         const char* reg = "", const char* origin = "", const char* dest = "") {
     blePutField(v, cs, 8); blePutField(v, ty, 4);
     blePutF32(v, lat); blePutF32(v, lon);
     blePutI32(v, alt); blePutI16(v, gs);
     v.push_back(flags); v.push_back(0);   // flags + pad
     blePutI16(v, track);
     uint8_t b[2]; std::memcpy(b, &squawk, 2); v.insert(v.end(), b, b + 2); // u16 squawk LE
+    blePutField(v, reg, 8); blePutField(v, origin, 4); blePutField(v, dest, 4);
 }
 
 void test_ble_valid_two_aircraft(void) {
@@ -467,6 +469,17 @@ void test_parse_nearest_registration(void) {
     TEST_ASSERT_EQUAL_STRING("", out2[0].registration.c_str());
 }
 
+void test_ble_v3_route_registration(void) {
+    std::vector<uint8_t> v = bleHeader(1, 48.0f, 11.0f);
+    bleAddRecord(v, "BAW1", "A320", 48.1f, 11.0f, 35000, 450, BLE_FLAG_ALT_VALID,
+                 0, 0, "G-XLEA", "EGLL", "KJFK");
+    BlePacket p = parseBlePacket(v.data(), v.size(), 5);
+    TEST_ASSERT_TRUE(p.ok);
+    TEST_ASSERT_EQUAL_STRING("G-XLEA", p.aircraft[0].registration.c_str());
+    TEST_ASSERT_EQUAL_STRING("EGLL", p.aircraft[0].origin.c_str());
+    TEST_ASSERT_EQUAL_STRING("KJFK", p.aircraft[0].dest.c_str());
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -516,6 +529,7 @@ int main(int, char **) {
     RUN_TEST(test_parse_nearest_track_squawk);
     RUN_TEST(test_parse_nearest_registration);
     RUN_TEST(test_ble_v2_track_squawk);
+    RUN_TEST(test_ble_v3_route_registration);
     RUN_TEST(test_parse_hexdb_route);
     RUN_TEST(test_airline_code);
     return UNITY_END();

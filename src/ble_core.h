@@ -11,10 +11,10 @@
 static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "BLE wire format assumes little-endian");
 constexpr uint8_t BLE_MAGIC0       = 0x46; // 'F'
 constexpr uint8_t BLE_MAGIC1       = 0x52; // 'R'
-constexpr uint8_t BLE_VERSION      = 2;
-constexpr size_t  BLE_MAX_AIRCRAFT = 15;
+constexpr uint8_t BLE_VERSION      = 3;
+constexpr size_t  BLE_MAX_AIRCRAFT = 10;
 constexpr size_t  BLE_HEADER_SIZE  = 12;
-constexpr size_t  BLE_RECORD_SIZE  = 32;
+constexpr size_t  BLE_RECORD_SIZE  = 48;
 constexpr size_t  BLE_MAX_PACKET   = BLE_HEADER_SIZE + BLE_MAX_AIRCRAFT * BLE_RECORD_SIZE; // 492
 
 constexpr uint8_t BLE_FLAG_GROUND    = 0x01;
@@ -79,6 +79,9 @@ inline BlePacket parseBlePacket(const uint8_t* buf, size_t len, size_t maxN, boo
         std::memcpy(&squawk, r + 30, 2);
         ac.track  = (flags & BLE_FLAG_TRACK_VALID)  ? (double)track : NAN;
         ac.squawk = (flags & BLE_FLAG_SQUAWK_VALID) ? (int)squawk   : 0;
+        ac.registration = bleField(r + 32, 8);
+        ac.origin       = bleField(r + 40, 4);
+        ac.dest         = bleField(r + 44, 4);
         ac.distKm = haversineKm(out.centerLat, out.centerLon, ac.lat, ac.lon);
         out.aircraft.push_back(ac);
     }
