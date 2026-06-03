@@ -31,7 +31,7 @@ class NotificationService {
         channelDescription: 'Emergency and military aircraft alerts',
         importance: Importance.high, priority: Priority.high,
       ),
-      iOS: DarwinNotificationDetails(),
+      iOS: DarwinNotificationDetails(presentAlert: true, presentBanner: true, presentSound: true),
     );
     await _plugin.show(id, title, body, details);
   }
