@@ -3,9 +3,15 @@ import 'package:http/http.dart' as http;
 import 'aircraft.dart';
 import '../packet/ble_packet.dart' show bleMaxAircraft;
 
+/// Whether to drop on-ground aircraft from the feed (radar + list). Mirror of the
+/// firmware's HIDE_GROUND_AIRCRAFT config.
+const bool kHideGroundAircraft = true;
+
 /// Pure: map an airplanes.live /v2/point JSON body to aircraft, nearest-first,
-/// capped to 16. Mirrors the field extraction in flight_core.h.
-List<Aircraft> parseAircraft(String body, double centerLat, double centerLon) {
+/// capped to 16. Mirrors the field extraction in flight_core.h. When [hideGround]
+/// is true, on-ground aircraft are dropped before the sort + cap.
+List<Aircraft> parseAircraft(String body, double centerLat, double centerLon,
+    {bool hideGround = false}) {
   final dynamic root = json.decode(body);
   final List<dynamic> ac = (root is Map && root['ac'] is List) ? root['ac'] as List : const [];
 
@@ -18,6 +24,7 @@ List<Aircraft> parseAircraft(String body, double centerLat, double centerLon) {
 
     final altRaw = item['alt_baro'];
     final onGround = altRaw == 'ground';
+    if (hideGround && onGround) continue; // drop ground traffic before sort/cap
     final int? altFt = (altRaw is num) ? altRaw.round() : null;
     final int? gsKt = (item['gs'] is num) ? (item['gs'] as num).round() : null;
 
@@ -54,6 +61,6 @@ class AirplanesClient {
     if (resp.statusCode != 200) {
       throw Exception('airplanes.live HTTP ${resp.statusCode}');
     }
-    return parseAircraft(resp.body, lat, lon);
+    return parseAircraft(resp.body, lat, lon, hideGround: kHideGroundAircraft);
   }
 }

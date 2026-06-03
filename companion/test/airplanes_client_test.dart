@@ -59,4 +59,20 @@ void main() {
     expect(list.length, 1);
     expect(list.single.callsign, 'OK1');
   });
+
+  test('parseAircraft hides on-ground aircraft when hideGround is true', () {
+    const body = '''
+{"ac":[
+  {"flight":"GND1","t":"B772","lat":0.0,"lon":0.1,"alt_baro":"ground","gs":3},
+  {"flight":"AIR1","t":"A320","lat":0.0,"lon":0.2,"alt_baro":10000,"gs":300},
+  {"flight":"AIR2","t":"A320","lat":0.0,"lon":0.3,"alt_baro":20000,"gs":400}
+]}
+''';
+    // hideGround true: GND (nearest) excluded; two nearest airborne kept.
+    final hidden = parseAircraft(body, 0.0, 0.0, hideGround: true);
+    expect(hidden.map((a) => a.callsign), ['AIR1', 'AIR2']);
+    // hideGround false (default): nearest-first incl. the ground aircraft.
+    final all = parseAircraft(body, 0.0, 0.0);
+    expect(all.first.callsign, 'GND1');
+  });
 }
