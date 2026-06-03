@@ -72,7 +72,9 @@ class AirplanesClient {
   Future<List<Aircraft>> fetchNearby(double lat, double lon, int radiusNm) async {
     final uri = Uri.parse(
         'https://api.airplanes.live/v2/point/${lat.toStringAsFixed(4)}/${lon.toStringAsFixed(4)}/$radiusNm');
-    final resp = await _http.get(uri, headers: {'User-Agent': 'flight-radar-companion'});
+    final resp = await _http
+        .get(uri, headers: {'User-Agent': 'flight-radar-companion'})
+        .timeout(const Duration(seconds: 8));
     if (resp.statusCode != 200) {
       throw Exception('airplanes.live HTTP ${resp.statusCode}');
     }

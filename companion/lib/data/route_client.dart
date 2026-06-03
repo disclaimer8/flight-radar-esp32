@@ -20,7 +20,7 @@ class RouteClient {
       final resp = await _http.get(
         Uri.parse('https://hexdb.io/api/v1/route/icao/$callsign'),
         headers: {'User-Agent': 'flight-radar-companion'},
-      );
+      ).timeout(const Duration(seconds: 4));
       if (resp.statusCode == 200) {
         final m = json.decode(resp.body);
         if (m is Map && m['route'] is String) result = parseHexdbRoute(m['route'] as String);
