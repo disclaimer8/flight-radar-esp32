@@ -40,7 +40,7 @@ inline std::string bleField(const uint8_t* p, size_t n) {
 }
 
 // Decode one binary packet. Returns ok=false (empty) on any validation failure.
-inline BlePacket parseBlePacket(const uint8_t* buf, size_t len, size_t maxN) {
+inline BlePacket parseBlePacket(const uint8_t* buf, size_t len, size_t maxN, bool hideGround = false) {
     BlePacket out;
     if (!buf || len < BLE_HEADER_SIZE) return out;
     if (buf[0] != BLE_MAGIC0 || buf[1] != BLE_MAGIC1) return out;
@@ -69,6 +69,7 @@ inline BlePacket parseBlePacket(const uint8_t* buf, size_t len, size_t maxN) {
         ac.lat = lat;
         ac.lon = lon;
         ac.onGround = (flags & BLE_FLAG_GROUND) != 0;
+        if (hideGround && ac.onGround) continue; // drop ground traffic before sort/cap
         ac.altFt = (flags & BLE_FLAG_ALT_VALID) ? (double)altFt : NAN;
         ac.gsKt  = (flags & BLE_FLAG_GS_VALID)  ? (double)gsKt  : NAN;
         ac.distKm = haversineKm(out.centerLat, out.centerLon, ac.lat, ac.lon);

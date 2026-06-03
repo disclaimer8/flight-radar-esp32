@@ -346,6 +346,25 @@ void test_parse_nearest_hides_ground(void) {
     TEST_ASSERT_EQUAL_STRING("AIR1", all[1].callsign.c_str());
 }
 
+void test_ble_hides_ground(void) {
+    // center 0,0. GND nearest (0.1, ground); A1 (0.2) and A2 (0.3) airborne.
+    std::vector<uint8_t> v = bleHeader(3, 0.0f, 0.0f);
+    bleAddRecord(v, "GND1", "B772", 0.0f, 0.1f, 0, 5, BLE_FLAG_GROUND);
+    bleAddRecord(v, "AIR1", "A320", 0.0f, 0.2f, 10000, 300, BLE_FLAG_ALT_VALID | BLE_FLAG_GS_VALID);
+    bleAddRecord(v, "AIR2", "A320", 0.0f, 0.3f, 20000, 400, BLE_FLAG_ALT_VALID | BLE_FLAG_GS_VALID);
+    // hideGround = true: GND excluded; two nearest airborne fill the slots.
+    BlePacket hid = parseBlePacket(v.data(), v.size(), 2, true);
+    TEST_ASSERT_TRUE(hid.ok);
+    TEST_ASSERT_EQUAL_UINT32(2, hid.aircraft.size());
+    TEST_ASSERT_EQUAL_STRING("AIR1", hid.aircraft[0].callsign.c_str());
+    TEST_ASSERT_EQUAL_STRING("AIR2", hid.aircraft[1].callsign.c_str());
+    // hideGround = false: nearest 2 include the ground aircraft.
+    BlePacket all = parseBlePacket(v.data(), v.size(), 2, false);
+    TEST_ASSERT_TRUE(all.ok);
+    TEST_ASSERT_EQUAL_STRING("GND1", all.aircraft[0].callsign.c_str());
+    TEST_ASSERT_EQUAL_STRING("AIR1", all.aircraft[1].callsign.c_str());
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -388,5 +407,6 @@ int main(int, char **) {
     RUN_TEST(test_ble_flags);
     RUN_TEST(test_ble_caps_to_maxN);
     RUN_TEST(test_parse_nearest_hides_ground);
+    RUN_TEST(test_ble_hides_ground);
     return UNITY_END();
 }

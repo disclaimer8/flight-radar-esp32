@@ -277,7 +277,7 @@ void loop() {
     unsigned long now = millis();
     if (g_blePacketReady) {
         g_blePacketReady = false;
-        BlePacket pkt = parseBlePacket(g_bleBuf, g_bleLen, MAX_AIRCRAFT);
+        BlePacket pkt = parseBlePacket(g_bleBuf, g_bleLen, MAX_AIRCRAFT, HIDE_GROUND_AIRCRAFT);
         if (pkt.ok) {
             g_cache     = pkt.aircraft;
             g_centerLat = pkt.centerLat;
