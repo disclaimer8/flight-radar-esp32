@@ -64,6 +64,32 @@ inline std::string fmtSpeed(const Aircraft& ac) {
     return b;
 }
 
+// Endpoint of a fixed-length line from `from` along `headingDeg` (north-up:
+// 0 = up/north, 90 = right/east). Used to draw aircraft heading vectors.
+inline ScreenPoint vectorEnd(ScreenPoint from, double headingDeg, double length) {
+    double r = headingDeg * M_PI / 180.0;
+    return ScreenPoint{
+        (int)std::lround(from.x + length * std::sin(r)),
+        (int)std::lround(from.y - length * std::cos(r)),
+    };
+}
+
+// Altitude band index for blip color: 0 ground/unknown, 1 <3k, 2 3-10k,
+// 3 10-25k, 4 25-40k, 5 >40k (feet).
+inline int altBand(double altFt, bool onGround) {
+    if (onGround || std::isnan(altFt)) return 0;
+    if (altFt < 3000)  return 1;
+    if (altFt < 10000) return 2;
+    if (altFt < 25000) return 3;
+    if (altFt < 40000) return 4;
+    return 5;
+}
+
+// Emergency transponder codes: 7500 hijack, 7600 radio fail, 7700 general.
+inline bool isEmergencySquawk(int code) {
+    return code == 7500 || code == 7600 || code == 7700;
+}
+
 // 8-point compass rose label for a bearing in degrees.
 inline const char* compassPoint(double bearing) {
     static const char* pts[8] = {"N","NE","E","SE","S","SW","W","NW"};

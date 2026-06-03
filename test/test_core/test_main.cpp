@@ -365,6 +365,34 @@ void test_ble_hides_ground(void) {
     TEST_ASSERT_EQUAL_STRING("AIR1", all.aircraft[1].callsign.c_str());
 }
 
+void test_vector_end_cardinals(void) {
+    // North-up: heading 0 = straight up (-y); 90 = right (+x).
+    ScreenPoint up = vectorEnd(ScreenPoint{100, 100}, 0.0, 10.0);
+    TEST_ASSERT_EQUAL_INT(100, up.x);
+    TEST_ASSERT_EQUAL_INT(90, up.y);
+    ScreenPoint right = vectorEnd(ScreenPoint{100, 100}, 90.0, 10.0);
+    TEST_ASSERT_EQUAL_INT(110, right.x);
+    TEST_ASSERT_EQUAL_INT(100, right.y);
+}
+
+void test_alt_band(void) {
+    TEST_ASSERT_EQUAL_INT(0, altBand(NAN, false));
+    TEST_ASSERT_EQUAL_INT(0, altBand(5000, true));
+    TEST_ASSERT_EQUAL_INT(1, altBand(1500, false));
+    TEST_ASSERT_EQUAL_INT(2, altBand(8000, false));
+    TEST_ASSERT_EQUAL_INT(3, altBand(20000, false));
+    TEST_ASSERT_EQUAL_INT(4, altBand(35000, false));
+    TEST_ASSERT_EQUAL_INT(5, altBand(45000, false));
+}
+
+void test_is_emergency_squawk(void) {
+    TEST_ASSERT_TRUE(isEmergencySquawk(7500));
+    TEST_ASSERT_TRUE(isEmergencySquawk(7600));
+    TEST_ASSERT_TRUE(isEmergencySquawk(7700));
+    TEST_ASSERT_FALSE(isEmergencySquawk(1200));
+    TEST_ASSERT_FALSE(isEmergencySquawk(0));
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -408,5 +436,8 @@ int main(int, char **) {
     RUN_TEST(test_ble_caps_to_maxN);
     RUN_TEST(test_parse_nearest_hides_ground);
     RUN_TEST(test_ble_hides_ground);
+    RUN_TEST(test_vector_end_cardinals);
+    RUN_TEST(test_alt_band);
+    RUN_TEST(test_is_emergency_squawk);
     return UNITY_END();
 }
