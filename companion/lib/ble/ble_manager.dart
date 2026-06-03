@@ -19,7 +19,10 @@ class BleManager {
   bool _wantConnected = false;
 
   BleStatus _status = BleStatus.idle;
-  void _set(BleStatus s) { _status = s; _statusController.add(s); }
+  void _set(BleStatus s) {
+    _status = s;
+    if (!_statusController.isClosed) _statusController.add(s);
+  }
   BleStatus get current => _status;
 
   /// Begin scanning + connecting; keeps trying until [stop] is called.
@@ -51,20 +54,13 @@ class BleManager {
   Future<void> _connect(BluetoothDevice device) async {
     _device = device;
     _set(BleStatus.connecting);
-    _connSub?.cancel();
-    _connSub = device.connectionState.listen((state) async {
-      if (state == BluetoothConnectionState.disconnected) {
-        _set(BleStatus.disconnected);
-        _char = null;
-        if (_wantConnected) await _scanAndConnect(); // reconnect
-      }
-    });
     try {
       await device.connect(
         license: License.nonprofit,
         timeout: const Duration(seconds: 15),
       );
       final services = await device.discoverServices();
+      _char = null;
       for (final s in services) {
         if (s.uuid == serviceUuid) {
           for (final c in s.characteristics) {
@@ -72,7 +68,30 @@ class BleManager {
           }
         }
       }
-      _set(_char != null ? BleStatus.connected : BleStatus.disconnected);
+
+      // stop() may have been called while we were connecting.
+      if (!_wantConnected) { await device.disconnect(); return; }
+
+      // Connected but the ingest characteristic is missing → not our device /
+      // wrong firmware. Disconnect and retry the scan rather than wedging.
+      if (_char == null) {
+        await device.disconnect();
+        if (_wantConnected) await _scanAndConnect();
+        return;
+      }
+
+      // Only NOW watch for disconnects. Subscribing after a successful connect
+      // means the stream's seeded initial value is `connected`, so we don't get
+      // a spurious `disconnected` that would start an overlapping reconnect.
+      await _connSub?.cancel();
+      _connSub = device.connectionState.listen((state) async {
+        if (state == BluetoothConnectionState.disconnected) {
+          _set(BleStatus.disconnected);
+          _char = null;
+          if (_wantConnected) await _scanAndConnect();
+        }
+      });
+      _set(BleStatus.connected);
     } catch (_) {
       _set(BleStatus.disconnected);
       if (_wantConnected) await _scanAndConnect();
@@ -101,7 +120,8 @@ class BleManager {
     _set(BleStatus.idle);
   }
 
-  void dispose() {
-    _statusController.close();
+  Future<void> dispose() async {
+    await stop();
+    await _statusController.close();
   }
 }
