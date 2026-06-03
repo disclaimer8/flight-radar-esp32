@@ -516,6 +516,8 @@ void test_parse_lat_lon(void) {
     TEST_ASSERT_FALSE(parseLatLon("abc", "0", a, b));
     TEST_ASSERT_FALSE(parseLatLon("", "0", a, b));
     TEST_ASSERT_FALSE(parseLatLon("38.7x", "0", a, b));
+    TEST_ASSERT_FALSE(parseLatLon("nan", "0", a, b));
+    TEST_ASSERT_FALSE(parseLatLon("0", "inf", a, b));
     TEST_ASSERT_FLOAT_WITHIN(0.0001, 1.5, a);
     TEST_ASSERT_FLOAT_WITHIN(0.0001, 2.5, b);
 }

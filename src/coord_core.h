@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdlib>
+#include <cmath>
 
 // Parse two coordinate strings; on success write lat/lon and return true. Returns
 // false (leaving lat/lon untouched) when either string is empty, non-numeric, has
@@ -12,6 +13,7 @@ inline bool parseLatLon(const char* latStr, const char* lonStr, double& lat, dou
     double lo = std::strtod(lonStr, &lonEnd);
     if (latEnd == latStr || lonEnd == lonStr) return false; // no digits consumed
     if (*latEnd != '\0' || *lonEnd != '\0') return false;   // trailing garbage
+    if (!std::isfinite(la) || !std::isfinite(lo)) return false; // reject nan/inf
     if (la < -90.0 || la > 90.0) return false;
     if (lo < -180.0 || lo > 180.0) return false;
     lat = la;
