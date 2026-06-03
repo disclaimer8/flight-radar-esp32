@@ -11,6 +11,7 @@
 #include <NimBLEDevice.h>
 #include "ble_core.h"
 #include <map>
+#include <Preferences.h>
 
 TFT_eSPI    tft = TFT_eSPI();
 TFT_eSprite fb  = TFT_eSprite(&tft);   // full-screen 240x240 framebuffer
@@ -98,6 +99,15 @@ std::pair<std::string, std::string> lookupRoute(const std::string& callsign) {
     http.end();
     g_routeCache[callsign] = result;
     return result;
+}
+
+// Persist the selected range index to NVS so the zoom survives reboot. Called only
+// on a user-driven change (not per frame), so flash wear is negligible.
+void saveRangeIdx() {
+    Preferences prefs;
+    prefs.begin("radar", false);   // read-write
+    prefs.putInt("rangeIdx", g_rangeIdx);
+    prefs.end();
 }
 
 // Current display range (outer ring) in km, selected by touch zoom. Replaces the
@@ -325,7 +335,15 @@ void handleTouch() {
     g_lastTouch = now;
 
     if (g_view == RADAR) {
-        if (g == TG_CLICK) { g_view = DETAIL; g_idx = 0; }
+        if (g == TG_CLICK) {
+            g_view = DETAIL; g_idx = 0;
+        } else if (g == TG_UP) {               // zoom in (smaller range)
+            int n = clampRangeIndex(g_rangeIdx, -1, kRangeCount);
+            if (n != g_rangeIdx) { g_rangeIdx = n; saveRangeIdx(); }
+        } else if (g == TG_DOWN) {              // zoom out (larger range)
+            int n = clampRangeIndex(g_rangeIdx, +1, kRangeCount);
+            if (n != g_rangeIdx) { g_rangeIdx = n; saveRangeIdx(); }
+        }
     } else { // DETAIL
         if (g == TG_LEFT && !g_cache.empty()) {
             g_idx = (g_idx + 1) % g_cache.size();
@@ -345,6 +363,16 @@ void setup() {
     fb.setColorDepth(16);
     if (!fb.createSprite(240, 240)) Serial.println("sprite alloc failed");
     touch.begin();
+    // Restore the saved display range (default 50 km = index 1), clamped valid.
+    {
+        Preferences prefs;
+        prefs.begin("radar", true);    // read-only
+        int saved = prefs.getInt("rangeIdx", 1);
+        prefs.end();
+        if (saved < 0) saved = 0;
+        if (saved > kRangeCount - 1) saved = kRangeCount - 1;
+        g_rangeIdx = saved;
+    }
     attachInterrupt(digitalPinToInterrupt(TOUCH_INT), onTouchISR, FALLING);
 
     NimBLEDevice::init(BLE_DEVICE_NAME);
