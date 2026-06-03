@@ -1,6 +1,8 @@
 import 'dart:async';
 import '../ble/ble_manager.dart';
+import '../data/aircraft.dart';
 import '../data/airplanes_client.dart';
+import '../data/route_client.dart';
 import '../location/location_service.dart';
 import '../packet/ble_packet.dart';
 
@@ -22,6 +24,7 @@ class GatewayEngine {
   final BleManager _ble = BleManager();
   final LocationService _location = GeolocatorLocationService();
   final AirplanesClient _client = AirplanesClient();
+  final RouteClient _routes = RouteClient();
 
   final _statusController = StreamController<GatewayStatus>.broadcast();
   Stream<GatewayStatus> get status => _statusController.stream;
@@ -74,7 +77,12 @@ class GatewayEngine {
     _fix = '${fix.lat.toStringAsFixed(4)}, ${fix.lon.toStringAsFixed(4)}';
     try {
       final aircraft = await _client.fetchNearby(fix.lat, fix.lon, kRadiusNm);
-      final packet = encodePacket(fix.lat, fix.lon, aircraft);
+      final enriched = <Aircraft>[];
+      for (final a in aircraft) {
+        final (o, d) = await _routes.lookup(a.callsign);
+        enriched.add(o.isEmpty ? a : a.copyWith(origin: o, dest: d));
+      }
+      final packet = encodePacket(fix.lat, fix.lon, enriched);
       final ok = await _ble.sendPacket(packet);
       if (ok) _count = aircraft.length;
     } catch (_) {
