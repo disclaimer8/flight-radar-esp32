@@ -126,8 +126,8 @@ inline std::string airlineCode(const std::string& callsign) {
 
 // Display-range presets in km, ascending (index 0 = nearest zoom, last = widest).
 // The widest preset doubles as the fixed API reception radius.
-inline constexpr double kRangePresets[] = {25.0, 50.0, 100.0};
-inline constexpr int    kRangeCount = 3;
+static constexpr double kRangePresets[] = {25.0, 50.0, 100.0};
+static constexpr int    kRangeCount = 3;
 static_assert(kRangeCount == (int)(sizeof(kRangePresets) / sizeof(kRangePresets[0])),
               "kRangeCount must match kRangePresets length");
 
