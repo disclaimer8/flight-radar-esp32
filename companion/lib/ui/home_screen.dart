@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
@@ -27,17 +28,26 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  /// Request every runtime permission the foreground service needs BEFORE start.
-  /// The location+connectedDevice FGS types require Bluetooth AND location to be
-  /// granted at startForeground time, else Android throws a SecurityException and
-  /// the service is killed. Returns true only if the required ones are granted.
+  /// Request every runtime permission the gateway needs BEFORE start. On Android
+  /// the location|connectedDevice FGS types require Bluetooth AND location granted
+  /// at startForeground time. On iOS, background feeding needs "Always" location
+  /// (requested as When-in-Use first, then escalated). Returns true if the
+  /// required permissions are granted.
   Future<bool> _requestPermissions() async {
-    // Notification (Android 13+): for the persistent FGS notification.
+    if (Platform.isIOS) {
+      final bt = await Permission.bluetooth.request();
+      final whenInUse = await Permission.locationWhenInUse.request();
+      if (whenInUse.isGranted) {
+        // Background needs "Always"; iOS shows this as a follow-up upgrade prompt.
+        await Permission.locationAlways.request();
+      }
+      return bt.isGranted && whenInUse.isGranted;
+    }
+    // Android.
     final notif = await FlutterForegroundTask.checkNotificationPermission();
     if (notif != NotificationPermission.granted) {
       await FlutterForegroundTask.requestNotificationPermission();
     }
-    // Bluetooth (Android 12+) + foreground location are REQUIRED for the FGS.
     final statuses = await [
       Permission.bluetoothScan,
       Permission.bluetoothConnect,
