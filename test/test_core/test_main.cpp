@@ -383,6 +383,11 @@ void test_alt_band(void) {
     TEST_ASSERT_EQUAL_INT(3, altBand(20000, false));
     TEST_ASSERT_EQUAL_INT(4, altBand(35000, false));
     TEST_ASSERT_EQUAL_INT(5, altBand(45000, false));
+    // exact boundaries land in the upper band
+    TEST_ASSERT_EQUAL_INT(2, altBand(3000, false));
+    TEST_ASSERT_EQUAL_INT(3, altBand(10000, false));
+    TEST_ASSERT_EQUAL_INT(4, altBand(25000, false));
+    TEST_ASSERT_EQUAL_INT(5, altBand(40000, false));
 }
 
 void test_is_emergency_squawk(void) {
