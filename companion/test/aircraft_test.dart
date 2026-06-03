@@ -56,6 +56,9 @@ void main() {
     expect(b.desc, a.desc);
     expect(b.isEmergency, a.isEmergency);
     expect(b.distKm, a.distKm);
+    expect(b.gsKt, a.gsKt);
+    expect(b.onGround, a.onGround);
+    expect(b.isMilitary, a.isMilitary);
 
     const c = Aircraft(callsign: 'X', type: '', lat: 0, lon: 0,
         altFt: null, gsKt: null, onGround: true);
