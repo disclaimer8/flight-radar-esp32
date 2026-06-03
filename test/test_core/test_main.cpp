@@ -548,6 +548,10 @@ void test_parse_wifi_config(void) {
     TEST_ASSERT_FALSE(parseWifiConfig(bigssid, sizeof(bigssid)).ok);
     uint8_t bigpass[] = {0x57,0x43,0x01, 1,'A', 64,'x'};
     TEST_ASSERT_FALSE(parseWifiConfig(bigpass, sizeof(bigpass)).ok);
+
+    // truncated pass: declares passLen 6 but only 2 pass bytes present
+    uint8_t truncpass[] = {0x57,0x43,0x01, 1,'A', 6,'p','w'};
+    TEST_ASSERT_FALSE(parseWifiConfig(truncpass, sizeof(truncpass)).ok);
 }
 
 void setUp(void) {}
