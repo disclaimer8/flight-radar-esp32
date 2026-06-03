@@ -50,4 +50,11 @@ void main() {
     expect(alertBody(m), contains('RRR2745'));
     expect(alertBody(m), contains('A400'));
   });
+
+  test('alertBody exact format incl. no-squawk and empty callsign', () {
+    expect(alertBody(_ac(cs: 'BAW117', emg: true, squawk: 7700)), '🚨 7700: BAW117');
+    expect(alertBody(_ac(cs: 'BAW117', emg: true)), '🚨 BAW117'); // no squawk
+    expect(alertBody(_ac(cs: '', emg: true, squawk: 7600)), '🚨 7600: ------'); // empty callsign
+    expect(alertBody(_ac(cs: '', type: 'A400', mil: true)), '------ A400'); // empty callsign, military
+  });
 }
