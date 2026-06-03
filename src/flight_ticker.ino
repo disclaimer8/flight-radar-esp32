@@ -9,6 +9,7 @@
 #include "flight_core.h"
 #include "render_core.h"
 #include "coord_core.h"
+#include "wifi_config_core.h"
 #include "cst816s.h"
 #include <NimBLEDevice.h>
 #include "ble_core.h"
@@ -63,6 +64,7 @@ void IRAM_ATTR onTouchISR() { g_touchEvent = true; }
 static const char* BLE_DEVICE_NAME  = "FlightRadar";
 static const char* BLE_SERVICE_UUID = "f1a90001-7e1d-4c2a-9b3f-1a2b3c4d5e6f";
 static const char* BLE_CHAR_UUID    = "f1a90002-7e1d-4c2a-9b3f-1a2b3c4d5e6f";
+static const char* BLE_WIFICFG_UUID = "f1a90003-7e1d-4c2a-9b3f-1a2b3c4d5e6f";
 
 static uint8_t  g_bleBuf[BLE_MAX_PACKET];
 volatile size_t g_bleLen = 0;
@@ -76,6 +78,24 @@ class IngestCallbacks : public NimBLECharacteristicCallbacks {
         std::memcpy(g_bleBuf, v.data(), n);
         g_bleLen = n;
         g_blePacketReady = true;
+    }
+};
+
+static uint8_t  g_wifiCfgBuf[128];
+volatile size_t g_wifiCfgLen = 0;
+volatile bool   g_wifiCfgReady = false;
+NimBLECharacteristic* g_wifiCfgChar = nullptr;
+
+// Receives a Wi-Fi provisioning packet from the app. Like IngestCallbacks, the
+// write callback only buffers + flags; loop() does the apply (off the BLE task).
+class WifiConfigCallbacks : public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic* c) override {
+        std::string v = c->getValue();
+        size_t n = v.size();
+        if (n > sizeof(g_wifiCfgBuf)) n = sizeof(g_wifiCfgBuf);
+        std::memcpy(g_wifiCfgBuf, v.data(), n);
+        g_wifiCfgLen = n;
+        g_wifiCfgReady = true;
     }
 };
 
@@ -426,6 +446,40 @@ void handleTouch() {
     }
 }
 
+// Notify the app of provisioning status: 1 code byte + ASCII detail (IP / reason).
+void notifyWifiStatus(uint8_t code, const String& detail) {
+    if (!g_wifiCfgChar) return;
+    uint8_t buf[64];
+    buf[0] = code;
+    size_t dlen = detail.length();
+    if (dlen > sizeof(buf) - 1) dlen = sizeof(buf) - 1;
+    std::memcpy(buf + 1, detail.c_str(), dlen);
+    g_wifiCfgChar->setValue(buf, 1 + dlen);
+    g_wifiCfgChar->notify();
+}
+
+// Apply a received Wi-Fi provisioning packet: parse, join, persist, report.
+// Bounded blocking wait (~12s) is acceptable for a deliberate one-shot action.
+void applyWifiConfig() {
+    WifiConfig cfg = parseWifiConfig(g_wifiCfgBuf, g_wifiCfgLen);
+    if (!cfg.ok) { notifyWifiStatus(2, "bad config"); return; }
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(TFT_CYAN, TFT_BLACK);
+    tft.drawString("Configuring", CX, 100, 4);
+    tft.drawString("Wi-Fi...", CX, 140, 4);
+    notifyWifiStatus(0, "");                 // applying
+    WiFi.persistent(true);
+    WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str());
+    unsigned long t = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - t < 12000) delay(100);
+    if (WiFi.status() == WL_CONNECTED) {
+        notifyWifiStatus(1, WiFi.localIP().toString());
+    } else {
+        notifyWifiStatus(2, "connect failed");
+    }
+}
+
 void setup() {
     Serial.begin(115200);
     tft.init();
@@ -457,6 +511,10 @@ void setup() {
     NimBLECharacteristic* bleCh = bleSvc->createCharacteristic(
         BLE_CHAR_UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
     bleCh->setCallbacks(new IngestCallbacks());
+    g_wifiCfgChar = bleSvc->createCharacteristic(
+        BLE_WIFICFG_UUID,
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY);
+    g_wifiCfgChar->setCallbacks(new WifiConfigCallbacks());
     bleSvc->start();
     NimBLEAdvertising* bleAdv = NimBLEDevice::getAdvertising();
     bleAdv->addServiceUUID(BLE_SERVICE_UUID);
@@ -485,6 +543,10 @@ void loop() {
             if (g_idx >= g_cache.size()) g_idx = 0;
             g_bleLastRx = millis();
         }
+    }
+    if (g_wifiCfgReady) {
+        g_wifiCfgReady = false;
+        applyWifiConfig();
     }
     // pollApi() blocks up to ~8s (HTTP timeout); the sweep freezes and touches are
     // ignored for that window. Acceptable on this single-threaded firmware — not a bug.
