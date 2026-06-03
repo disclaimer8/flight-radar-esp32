@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import '../ble/ble_manager.dart';
 import '../data/airplanes_client.dart';
@@ -20,10 +22,12 @@ class GatewayTaskHandler extends TaskHandler {
   String _lastBle = 'idle';
   int _lastCount = 0;
   String _lastFix = 'no fix';
+  StreamSubscription<BleStatus>? _statusSub;
+  bool _busy = false;
 
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
-    _ble.status.listen((s) {
+    _statusSub = _ble.status.listen((s) {
       _lastBle = s.name;
       _push();
     });
@@ -32,7 +36,9 @@ class GatewayTaskHandler extends TaskHandler {
 
   @override
   void onRepeatEvent(DateTime timestamp) {
-    _cycle();
+    if (_busy) return;                 // skip the tick if the previous cycle is still running
+    _busy = true;
+    _cycle().whenComplete(() => _busy = false);
   }
 
   Future<void> _cycle() async {
@@ -73,6 +79,7 @@ class GatewayTaskHandler extends TaskHandler {
 
   @override
   Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {
+    await _statusSub?.cancel();
     await _ble.stop();
     await _ble.dispose();
   }
