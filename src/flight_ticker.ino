@@ -99,7 +99,7 @@ void pollApi() {
     int code = http.GET();
     if (code == 200) {
         String payload = http.getString();
-        g_cache = parseNearest(std::string(payload.c_str()), MY_LAT, MY_LON, MAX_AIRCRAFT);
+        g_cache = parseNearest(std::string(payload.c_str()), MY_LAT, MY_LON, MAX_AIRCRAFT, HIDE_GROUND_AIRCRAFT);
         if (g_idx >= g_cache.size()) g_idx = 0;
         g_centerLat = MY_LAT; g_centerLon = MY_LON;
         g_stale = false;

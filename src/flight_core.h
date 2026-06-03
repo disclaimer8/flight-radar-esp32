@@ -46,7 +46,7 @@ inline std::string trimStr(const char* s) {
 
 inline std::vector<Aircraft> parseNearest(const std::string& json,
                                           double myLat, double myLon,
-                                          size_t maxN) {
+                                          size_t maxN, bool hideGround = false) {
     std::vector<Aircraft> out;
 
     JsonDocument filter;
@@ -72,6 +72,7 @@ inline std::vector<Aircraft> parseNearest(const std::string& json,
             ac.altFt = a["alt_baro"].as<double>();
         }
         if (a["gs"].is<double>()) ac.gsKt = a["gs"].as<double>();
+        if (hideGround && ac.onGround) continue; // drop ground traffic before sort/cap
         ac.lat = a["lat"] | 0.0;
         ac.lon = a["lon"] | 0.0;
         ac.distKm = haversineKm(myLat, myLon, ac.lat, ac.lon);

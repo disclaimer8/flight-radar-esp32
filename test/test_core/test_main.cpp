@@ -326,6 +326,26 @@ void test_ble_caps_to_maxN(void) {
     TEST_ASSERT_EQUAL_STRING("B", p.aircraft[1].callsign.c_str());
 }
 
+void test_parse_nearest_hides_ground(void) {
+    // center 0,0. GND is nearest (0.1) but on the ground; A1 (0.2) and A2 (0.3) airborne.
+    const char* json =
+        "{\"ac\":["
+        "{\"flight\":\"GND1\",\"t\":\"B772\",\"lat\":0.0,\"lon\":0.1,\"alt_baro\":\"ground\",\"gs\":3},"
+        "{\"flight\":\"AIR1\",\"t\":\"A320\",\"lat\":0.0,\"lon\":0.2,\"alt_baro\":10000,\"gs\":300},"
+        "{\"flight\":\"AIR2\",\"t\":\"A320\",\"lat\":0.0,\"lon\":0.3,\"alt_baro\":20000,\"gs\":400}"
+        "]}";
+    // hideGround = true: GND excluded, the two nearest AIRBORNE fill the slots.
+    auto kept = parseNearest(json, 0.0, 0.0, 2, true);
+    TEST_ASSERT_EQUAL_UINT32(2, kept.size());
+    TEST_ASSERT_EQUAL_STRING("AIR1", kept[0].callsign.c_str());
+    TEST_ASSERT_EQUAL_STRING("AIR2", kept[1].callsign.c_str());
+    // hideGround = false: nearest 2 include the ground aircraft (current behavior).
+    auto all = parseNearest(json, 0.0, 0.0, 2, false);
+    TEST_ASSERT_EQUAL_UINT32(2, all.size());
+    TEST_ASSERT_EQUAL_STRING("GND1", all[0].callsign.c_str());
+    TEST_ASSERT_EQUAL_STRING("AIR1", all[1].callsign.c_str());
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -367,5 +387,6 @@ int main(int, char **) {
     RUN_TEST(test_ble_length_mismatch);
     RUN_TEST(test_ble_flags);
     RUN_TEST(test_ble_caps_to_maxN);
+    RUN_TEST(test_parse_nearest_hides_ground);
     return UNITY_END();
 }

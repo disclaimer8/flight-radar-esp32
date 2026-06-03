@@ -17,6 +17,7 @@
 #define IDLE_RETURN_MS    15000   // detail view auto-returns to radar after this idle
 #define SWEEP_PERIOD_MS   4000    // radar sweep: ms per full revolution
 #define BLE_FRESHNESS_MS  30000   // BLE-fed data is considered live for this long
+#define HIDE_GROUND_AIRCRAFT  1   // 1 = hide on-ground aircraft from radar + list
 
 // --- Touch CST816S (I2C) on ESP32-S3-Touch-LCD-1.28 ---
 #define TOUCH_SDA  6
