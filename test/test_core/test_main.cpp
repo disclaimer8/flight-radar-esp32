@@ -480,6 +480,25 @@ void test_ble_v3_route_registration(void) {
     TEST_ASSERT_EQUAL_STRING("KJFK", p.aircraft[0].dest.c_str());
 }
 
+void test_clamp_range_index(void) {
+    TEST_ASSERT_EQUAL_INT(0, clampRangeIndex(0, -1, 3)); // clamp at low end
+    TEST_ASSERT_EQUAL_INT(2, clampRangeIndex(2, +1, 3)); // clamp at high end
+    TEST_ASSERT_EQUAL_INT(1, clampRangeIndex(0, +1, 3)); // step up
+    TEST_ASSERT_EQUAL_INT(1, clampRangeIndex(2, -1, 3)); // step down
+    TEST_ASSERT_EQUAL_INT(0, clampRangeIndex(1, -1, 3)); // middle down
+}
+
+void test_is_on_rim(void) {
+    TEST_ASSERT_FALSE(isOnRim(10.0, 25.0));  // inside the range
+    TEST_ASSERT_FALSE(isOnRim(25.0, 25.0));  // exactly on the boundary = in range
+    TEST_ASSERT_TRUE(isOnRim(30.0, 25.0));   // beyond the range
+}
+
+void test_query_radius_nm(void) {
+    TEST_ASSERT_EQUAL_INT(54, queryRadiusNm(100.0)); // widest preset
+    TEST_ASSERT_EQUAL_INT(27, queryRadiusNm(50.0));  // sanity vs today's 27 NM
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -532,5 +551,8 @@ int main(int, char **) {
     RUN_TEST(test_ble_v3_route_registration);
     RUN_TEST(test_parse_hexdb_route);
     RUN_TEST(test_airline_code);
+    RUN_TEST(test_clamp_range_index);
+    RUN_TEST(test_is_on_rim);
+    RUN_TEST(test_query_radius_nm);
     return UNITY_END();
 }

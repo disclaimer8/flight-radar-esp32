@@ -121,3 +121,30 @@ inline std::string airlineCode(const std::string& callsign) {
     }
     return callsign.substr(0, 3);
 }
+
+// --- Display-range presets + radar zoom helpers ---
+
+// Display-range presets in km, ascending (index 0 = nearest zoom, last = widest).
+// The widest preset doubles as the fixed API reception radius.
+inline constexpr double kRangePresets[] = {25.0, 50.0, 100.0};
+inline constexpr int    kRangeCount = 3;
+
+// Clamp idx+delta into [0, count-1]. Ladder semantics: no wrap at the ends.
+inline int clampRangeIndex(int idx, int delta, int count) {
+    int n = idx + delta;
+    if (n < 0) n = 0;
+    if (n > count - 1) n = count - 1;
+    return n;
+}
+
+// True when an aircraft sits beyond the display range (-> draw it as a rim dot).
+// Exactly on the boundary counts as in-range.
+inline bool isOnRim(double distKm, double displayRangeKm) {
+    return distKm > displayRangeKm;
+}
+
+// API query radius in nautical miles for a reception radius given in km, rounded up
+// (1 NM = 1.852 km). Used to build the airplanes.live poll URL.
+inline int queryRadiusNm(double maxPresetKm) {
+    return (int)std::ceil(maxPresetKm / 1.852);
+}
