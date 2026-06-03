@@ -39,7 +39,12 @@ class _HomeScreenState extends State<HomeScreen> {
       final whenInUse = await Permission.locationWhenInUse.request();
       if (whenInUse.isGranted) {
         // Background needs "Always"; iOS shows this as a follow-up upgrade prompt.
-        await Permission.locationAlways.request();
+        final always = await Permission.locationAlways.request();
+        if (!always.isGranted && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Enable "Always" location to keep feeding in the background'),
+          ));
+        }
       }
       return bt.isGranted && whenInUse.isGranted;
     }
