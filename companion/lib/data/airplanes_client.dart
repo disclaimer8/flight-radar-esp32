@@ -27,6 +27,8 @@ List<Aircraft> parseAircraft(String body, double centerLat, double centerLon,
     if (hideGround && onGround) continue; // drop ground traffic before sort/cap
     final int? altFt = (altRaw is num) ? altRaw.round() : null;
     final int? gsKt = (item['gs'] is num) ? (item['gs'] as num).round() : null;
+    final double? track = (item['track'] is num) ? (item['track'] as num).toDouble() : null;
+    final int? squawk = (item['squawk'] is String) ? int.tryParse(item['squawk'] as String) : null;
 
     list.add(Aircraft(
       callsign: (item['flight'] as String?)?.trim() ?? '',
@@ -36,6 +38,8 @@ List<Aircraft> parseAircraft(String body, double centerLat, double centerLon,
       altFt: altFt,
       gsKt: gsKt,
       onGround: onGround,
+      track: track,
+      squawk: squawk,
     ));
   }
 

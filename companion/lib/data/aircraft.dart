@@ -10,6 +10,8 @@ class Aircraft {
   final int? altFt;
   final int? gsKt;
   final bool onGround;
+  final double? track; // true track degrees; null if missing
+  final int? squawk;   // transponder code; null if missing
 
   const Aircraft({
     required this.callsign,
@@ -19,6 +21,8 @@ class Aircraft {
     required this.altFt,
     required this.gsKt,
     required this.onGround,
+    this.track,
+    this.squawk,
   });
 }
 

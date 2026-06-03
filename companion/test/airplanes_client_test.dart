@@ -75,4 +75,16 @@ void main() {
     final all = parseAircraft(body, 0.0, 0.0);
     expect(all.first.callsign, 'GND1');
   });
+
+  test('parseAircraft extracts track and squawk', () {
+    const body = '{"ac":[{"flight":"AB","t":"A320","lat":0.0,"lon":0.1,'
+        '"alt_baro":10000,"gs":300,"track":275.4,"squawk":"7700"}]}';
+    final a = parseAircraft(body, 0.0, 0.0).single;
+    expect(a.track, closeTo(275.4, 0.1));
+    expect(a.squawk, 7700);
+    // Missing -> null.
+    final b = parseAircraft('{"ac":[{"flight":"X","lat":0.0,"lon":0.1}]}', 0.0, 0.0).single;
+    expect(b.track, isNull);
+    expect(b.squawk, isNull);
+  });
 }
