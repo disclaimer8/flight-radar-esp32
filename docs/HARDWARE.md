@@ -97,10 +97,14 @@ color constants automatically).
 The ESP32-S3's radio runs BLE alongside Wi-Fi. The firmware brings up a NimBLE
 peripheral (`h2zero/NimBLE-Arduino@^1.4.1`, the lighter 1.x stack) advertising
 as `FlightRadar`, so a phone can write aircraft packets when Wi-Fi is
-unavailable. Wi-Fi (2.4 GHz) and BLE share the one radio and coexist fine here —
-the BLE path is low-duty (one short write at a time), and as noted above the
-NimBLE stack fits in SRAM next to the framebuffer and the TLS poll. The protocol
-and source arbitration are in [ARCHITECTURE.md](ARCHITECTURE.md).
+unavailable. The phone side is the Flutter companion app in `companion/`
+(Android + iOS); `scripts/ble_send.py` is the laptop smoke-test sender. Wi-Fi
+(2.4 GHz) and BLE share the one radio and coexist fine here — the BLE path is
+low-duty (one short write at a time), and as noted above the NimBLE stack fits
+in SRAM next to the framebuffer and the TLS poll. The v2 wire format caps the
+packet at 15 aircraft (492 B) so it lands in a single ATT write at the
+negotiated MTU. The protocol and source arbitration are in
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 > NimBLE 1.x uses the single-argument `onWrite(NimBLECharacteristic*)` callback
 > signature; the 2.x API changed it. Pin to `^1.4.1` to match the firmware.

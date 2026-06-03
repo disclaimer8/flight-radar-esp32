@@ -12,7 +12,11 @@ CST816S capacitive touch, ESP32-S3R2).
 
 - **Radar view** — concentric range rings, a rotating sweep, North at the top,
   the observer at the center, and a blip per aircraft placed by bearing +
-  distance. The nearest aircraft is highlighted with its callsign. A red dot
+  distance. Each blip is **colored by altitude band** (ground/unknown grey,
+  <3k ft red, 3–10k orange, 10–25k yellow-green, 25–40k cyan, >40k blue) and
+  carries a short **heading vector** along its true track. The nearest aircraft
+  gets a **white ring + callsign label**. Aircraft squawking an **emergency
+  code** (7500/7600/7700) blink red with an `EMERGENCY <code>` banner. A red dot
   appears top-right if the last poll failed.
 - **Detail view** (tap to open) — one flight at a time: callsign, type +
   compass direction, distance, altitude and speed, with page dots.
@@ -49,12 +53,14 @@ host unit tests under the `native` environment — no hardware needed.
 | File | Responsibility |
 |------|----------------|
 | `src/flight_core.h` | Poll parsing (ArduinoJson), haversine distance, sort by nearest |
-| `src/render_core.h` | Bearing, polar→screen projection, compass points, field formatting (host-tested) |
+| `src/render_core.h` | Bearing, polar→screen projection, heading vectors, altitude band, emergency-squawk test, compass points, field formatting (host-tested) |
+| `src/ble_core.h` | BLE wire protocol + `parseBlePacket` (host-tested) |
 | `src/cst816s.h` | Minimal CST816S touch gesture driver |
-| `src/flight_ticker.ino` | Wi-Fi/HTTP, TFT_eSPI sprite rendering, touch + radar/detail state machine |
+| `src/flight_ticker.ino` | Wi-Fi/HTTP, NimBLE peripheral, TFT_eSPI sprite rendering, touch + radar/detail state machine |
 
-`pio test -e native -f test_core` runs the unit tests (36 cases, including the
-BLE packet parser).
+`pio test -e native -f test_core` runs the unit tests (43 cases, including the
+BLE packet parser). The companion app has its own Flutter unit tests:
+`cd companion && flutter test`.
 
 ## BLE fallback (optional)
 
@@ -63,17 +69,22 @@ peripheral (`src/ble_core.h` + the NimBLE setup in the `.ino`): a phone
 companion can write one compact binary packet of nearby aircraft, and the radar
 re-centers on the packet's GPS and plots them. BLE data is used **only when
 Wi-Fi is down** and the last packet is still fresh (≤ `BLE_FRESHNESS_MS`,
-default 30 s); after that the screen shows **NO LINK**. The packet format and
-GATT UUIDs are documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+default 30 s); after that the screen shows **NO LINK**. The wire format
+(v2, header + up to 15 records) and GATT UUIDs are documented in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-> The phone companion app isn't built yet — `scripts/ble_send.py` is the only
-> sender today.
+> **Phone companion app** — `companion/` is a Flutter app (Android **and** iOS,
+> hardware-verified) that polls airplanes.live around the phone's GPS and feeds
+> nearby aircraft to the device over BLE when Wi-Fi is down. It's the production
+> sender for this fallback; `scripts/ble_send.py` remains a laptop smoke-test
+> harness. See [companion/README.md](companion/README.md).
 
 Test it against a flashed device from your laptop:
 
 ```bash
 pip install bleak
-python3 scripts/ble_send.py   # sends one sample 3-aircraft packet (near Lisbon)
+python3 scripts/ble_send.py   # one sample v2 3-aircraft packet near Lisbon
+                              # (incl. a 7700 emergency + an on-ground aircraft)
 ```
 
 The device advertises as `FlightRadar`. On macOS, grant your terminal Bluetooth

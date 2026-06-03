@@ -17,21 +17,24 @@ Integrated board — no wiring; flash over USB-C.
 ## Toolchain (macOS): PlatformIO
 
 `brew install platformio`. Everything from the terminal, no Arduino IDE.
-- Tests (host, no hardware): `pio test -e native -f test_core` (36 cases)
+- Tests (host, no hardware): `pio test -e native -f test_core` (43 cases)
+- Companion app tests: `cd companion && flutter test`
 - Build: `pio run -e esp32-s3`
 - Flash: `pio run -e esp32-s3 -t upload` (native USB auto-resets; no BOOT hold)
 - BLE smoke test: `pip install bleak; python3 scripts/ble_send.py` → sends one
-  sample packet to a flashed device (advertises as `FlightRadar`)
+  sample v2 packet (incl. a 7700 emergency) to a flashed device (advertises as
+  `FlightRadar`)
 
 ## Code layout
 
 Pure, host-testable core + thin Arduino layer:
-- `src/flight_core.h` — parse / haversine / sort (Arduino-free)
-- `src/render_core.h` — bearing / polar projection / compass / formatting (Arduino-free, tested)
+- `src/flight_core.h` — parse (incl. `track`/`squawk`) / haversine / sort (Arduino-free)
+- `src/render_core.h` — bearing / polar projection / `vectorEnd` / `altBand` / `isEmergencySquawk` / compass / formatting (Arduino-free, tested)
 - `src/cst816s.h` — CST816S touch driver
-- `src/ble_core.h` — BLE wire protocol + `parseBlePacket` (Arduino-free, tested)
+- `src/ble_core.h` — BLE wire protocol (v2) + `parseBlePacket` (Arduino-free, tested)
 - `src/flight_ticker.ino` — Wi-Fi/HTTP + NimBLE peripheral + TFT_eSPI sprite + radar/detail state machine
-- `scripts/ble_send.py` — host BLE test sender (bleak); only sender today (no phone app yet)
+- `scripts/ble_send.py` — host BLE smoke-test sender (bleak), emits v2 packets
+- `companion/` — Flutter phone app (Android + iOS): polls airplanes.live at the phone's GPS and feeds aircraft to the device over BLE when Wi-Fi is down (the fallback's phone side)
 
 Config + secrets in `src/config.h` (copy from `config.example.h`; gitignored).
 
@@ -46,6 +49,9 @@ Config + secrets in `src/config.h` (copy from `config.example.h`; gitignored).
 - BLE is fallback-only: used when Wi-Fi is down AND last packet ≤ `BLE_FRESHNESS_MS`
   (30 s) old, else `NO LINK`. Source indicator (bottom-center): green W / red W /
   cyan B / red NO LINK. Write callback only buffers + flags; `loop()` parses (no race).
+- BLE wire = v2: 12 B header + ≤ **15** × 32 B records (15 caps it at 492 B for a
+  single ATT write); records carry `track`+`squawk`; display still caps `MAX_AIRCRAFT` (10).
+- `HIDE_GROUND_AIRCRAFT` (default 1) drops on-ground aircraft from radar + list on both paths.
 - NimBLE pinned to `^1.4.1` (1.x single-arg `onWrite`); 2.x changed the signature.
   NimBLE + Wi-Fi/TLS + 115 KB sprite all coexist in SRAM (verified on device).
 - BLE freshness window is short (30 s) — when testing, send right before observing
@@ -53,9 +59,12 @@ Config + secrets in `src/config.h` (copy from `config.example.h`; gitignored).
 
 ## Ideas / backlog
 
-Altitude filter, per-aircraft track vector, switch to local reception
-(RTL-SDR + dump1090) instead of the API, Cyrillic font for labels.
+Switch to local reception (RTL-SDR + dump1090) instead of the API, Cyrillic font
+for labels.
 
-**Done:** BLE phone-fallback data path (wire protocol + parser + NimBLE
-peripheral + source arbitration; shipped). Still missing the phone companion app
-itself — `scripts/ble_send.py` is the only sender today.
+**Done:** BLE phone-fallback data path (v2 wire protocol + parser + NimBLE
+peripheral + source arbitration). **Phone companion app shipped** — Flutter
+(Android + iOS, hardware-verified) in `companion/`; `scripts/ble_send.py` is now
+just the laptop smoke-test sender. Radar enrichment shipped: altitude-band blip
+colors, per-aircraft heading vectors, emergency-squawk (7500/7600/7700) blink +
+banner, and the `HIDE_GROUND_AIRCRAFT` filter.
