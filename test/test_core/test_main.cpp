@@ -1,6 +1,7 @@
 #include <unity.h>
 #include "../../src/flight_core.h"
 #include "../../src/render_core.h"
+#include "../../src/coord_core.h"
 #include "../../src/ble_core.h"
 #include <cstring>
 
@@ -499,6 +500,26 @@ void test_query_radius_nm(void) {
     TEST_ASSERT_EQUAL_INT(27, queryRadiusNm(50.0));  // sanity vs today's 27 NM
 }
 
+void test_parse_lat_lon(void) {
+    double la = 0, lo = 0;
+    TEST_ASSERT_TRUE(parseLatLon("38.7677", "-9.3006", la, lo));
+    TEST_ASSERT_FLOAT_WITHIN(0.0001, 38.7677, la);
+    TEST_ASSERT_FLOAT_WITHIN(0.0001, -9.3006, lo);
+    // boundaries accepted
+    TEST_ASSERT_TRUE(parseLatLon("-90", "180", la, lo));
+    TEST_ASSERT_TRUE(parseLatLon("90", "-180", la, lo));
+    // out of range rejected
+    double a = 1.5, b = 2.5;
+    TEST_ASSERT_FALSE(parseLatLon("91", "0", a, b));
+    TEST_ASSERT_FALSE(parseLatLon("0", "181", a, b));
+    // garbage / empty / trailing junk rejected, out-params untouched
+    TEST_ASSERT_FALSE(parseLatLon("abc", "0", a, b));
+    TEST_ASSERT_FALSE(parseLatLon("", "0", a, b));
+    TEST_ASSERT_FALSE(parseLatLon("38.7x", "0", a, b));
+    TEST_ASSERT_FLOAT_WITHIN(0.0001, 1.5, a);
+    TEST_ASSERT_FLOAT_WITHIN(0.0001, 2.5, b);
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -554,5 +575,6 @@ int main(int, char **) {
     RUN_TEST(test_clamp_range_index);
     RUN_TEST(test_is_on_rim);
     RUN_TEST(test_query_radius_nm);
+    RUN_TEST(test_parse_lat_lon);
     return UNITY_END();
 }
