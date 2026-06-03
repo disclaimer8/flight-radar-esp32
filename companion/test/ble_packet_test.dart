@@ -6,7 +6,9 @@ import 'package:flight_radar_companion/packet/ble_packet.dart';
 Aircraft _ac({
   String cs = 'AAA', String ty = 'A320',
   double lat = 0, double lon = 0, int? alt = 1000, int? gs = 300, bool ground = false,
-}) => Aircraft(callsign: cs, type: ty, lat: lat, lon: lon, altFt: alt, gsKt: gs, onGround: ground);
+  double? track, int? squawk,
+}) => Aircraft(callsign: cs, type: ty, lat: lat, lon: lon, altFt: alt, gsKt: gs,
+    onGround: ground, track: track, squawk: squawk);
 
 void main() {
   test('empty packet is a 12-byte header', () {
@@ -14,7 +16,7 @@ void main() {
     expect(bytes.length, 12);
     expect(bytes[0], 0x46); // 'F'
     expect(bytes[1], 0x52); // 'R'
-    expect(bytes[2], 1);    // version
+    expect(bytes[2], 2);    // version
     expect(bytes[3], 0);    // count
     final bd = ByteData.sublistView(bytes);
     expect(bd.getFloat32(4, Endian.little), closeTo(48.0, 0.0001));
@@ -25,7 +27,7 @@ void main() {
     final bytes = encodePacket(48.0, 11.0, [
       _ac(cs: 'RYR9XZ', ty: 'B738', lat: 48.1, lon: 11.2, alt: 12000, gs: 380, ground: false),
     ]);
-    expect(bytes.length, 12 + 28);
+    expect(bytes.length, 12 + 32);
     expect(bytes[3], 1); // count
     final r = ByteData.sublistView(bytes, 12);
     expect(String.fromCharCodes(bytes.sublist(12, 20)), 'RYR9XZ  ');
@@ -52,11 +54,27 @@ void main() {
     expect(String.fromCharCodes(bytes.sublist(20, 24)), 'TYPE');
   });
 
-  test('count caps at 16 even if given more', () {
+  test('count caps at 15 even if given more', () {
     final many = List.generate(20, (i) => _ac(cs: 'A$i'));
     final bytes = encodePacket(0, 0, many);
-    expect(bytes[3], 16);
-    expect(bytes.length, 12 + 16 * 28);
+    expect(bytes[3], 15);
+    expect(bytes.length, 12 + 15 * 32);
+  });
+
+  test('encodePacket v2 writes track and squawk with valid flags', () {
+    final bytes = encodePacket(48.0, 11.0, [_ac(cs: 'DLH', track: 287, squawk: 7700)]);
+    expect(bytes[2], 2);                 // version
+    expect(bytes.length, 12 + 32);       // one 32-byte record
+    final r = ByteData.sublistView(bytes, 12);
+    expect(r.getInt16(28, Endian.little), 287);
+    expect(r.getUint16(30, Endian.little), 7700);
+    expect(r.getUint8(26) & bleFlagTrackValid, bleFlagTrackValid);
+    expect(r.getUint8(26) & bleFlagSquawkValid, bleFlagSquawkValid);
+    // null track/squawk -> flags clear, fields 0.
+    final b2 = encodePacket(0, 0, [_ac(cs: 'X')]);
+    final r2 = ByteData.sublistView(b2, 12);
+    expect(r2.getUint8(26) & bleFlagTrackValid, 0);
+    expect(r2.getInt16(28, Endian.little), 0);
   });
 
   test('negative altitude round-trips as signed int32', () {

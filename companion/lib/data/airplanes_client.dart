@@ -8,7 +8,7 @@ import '../packet/ble_packet.dart' show bleMaxAircraft;
 const bool kHideGroundAircraft = true;
 
 /// Pure: map an airplanes.live /v2/point JSON body to aircraft, nearest-first,
-/// capped to 16. Mirrors the field extraction in flight_core.h. When [hideGround]
+/// capped to 15. Mirrors the field extraction in flight_core.h. When [hideGround]
 /// is true, on-ground aircraft are dropped before the sort + cap.
 List<Aircraft> parseAircraft(String body, double centerLat, double centerLon,
     {bool hideGround = false}) {
