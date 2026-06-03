@@ -2,3 +2,7 @@
 src/config.h
 
 .superpowers/
+
+# Python bytecode (scripts/)
+__pycache__/
+*.pyc
