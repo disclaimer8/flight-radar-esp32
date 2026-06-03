@@ -459,6 +459,14 @@ void test_airline_code(void) {
     TEST_ASSERT_EQUAL_STRING("", airlineCode("").c_str());
 }
 
+void test_parse_nearest_registration(void) {
+    const char* json = "{\"ac\":[{\"flight\":\"BAW1\",\"r\":\"G-XLEA\",\"lat\":0.0,\"lon\":0.1}]}";
+    auto out = parseNearest(json, 0.0, 0.0, 5);
+    TEST_ASSERT_EQUAL_STRING("G-XLEA", out[0].registration.c_str());
+    auto out2 = parseNearest("{\"ac\":[{\"flight\":\"X\",\"lat\":0.0,\"lon\":0.1}]}", 0.0, 0.0, 5);
+    TEST_ASSERT_EQUAL_STRING("", out2[0].registration.c_str());
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -506,6 +514,7 @@ int main(int, char **) {
     RUN_TEST(test_alt_band);
     RUN_TEST(test_is_emergency_squawk);
     RUN_TEST(test_parse_nearest_track_squawk);
+    RUN_TEST(test_parse_nearest_registration);
     RUN_TEST(test_ble_v2_track_squawk);
     RUN_TEST(test_parse_hexdb_route);
     RUN_TEST(test_airline_code);
