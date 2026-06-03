@@ -4,8 +4,10 @@ import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:permission_handler/permission_handler.dart';
+import '../data/photo_client.dart';
 import '../service/gateway_controller.dart';
 import '../service/gateway_engine.dart' show GatewayStatus;
+import 'aircraft_card.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -17,6 +19,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final _controller = GatewayController();
   GatewayStatus _status = const GatewayStatus();
   bool _running = false;
+  final _photos = PhotoClient();
   StreamSubscription<GatewayStatus>? _sub;
 
   @override
@@ -91,24 +94,41 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Flight Radar Companion')),
-      body: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _row('Device', _status.ble),
-            _row('GPS', _status.fix),
-            _row('Last packet', '${_status.count} aircraft'),
-            const Spacer(),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton(
-                onPressed: _toggle,
-                child: Text(_running ? 'Stop' : 'Start feeding device'),
-              ),
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _row('Device', _status.ble),
+                _row('GPS', _status.fix),
+                _row('Last packet', '${_status.count} aircraft'),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton(
+                    onPressed: _toggle,
+                    child: Text(_running ? 'Stop' : 'Start feeding device'),
+                  ),
+                ),
+              ],
             ),
-          ],
-        ),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: _status.aircraft.isEmpty
+                ? const Center(
+                    child: Text('Start feeding to see nearby aircraft',
+                        style: TextStyle(color: Colors.black54)))
+                : ListView.builder(
+                    itemCount: _status.aircraft.length,
+                    itemBuilder: (context, i) =>
+                        AircraftCard(aircraft: _status.aircraft[i], photos: _photos),
+                  ),
+          ),
+        ],
       ),
     );
   }
