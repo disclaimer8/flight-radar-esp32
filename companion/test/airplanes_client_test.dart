@@ -87,4 +87,17 @@ void main() {
     expect(b.track, isNull);
     expect(b.squawk, isNull);
   });
+
+  test('parseAircraft extracts registration', () {
+    final a = parseAircraft('{"ac":[{"flight":"BAW1","r":"G-XLEA","lat":0.0,"lon":0.1}]}', 0, 0).single;
+    expect(a.registration, 'G-XLEA');
+    final b = parseAircraft('{"ac":[{"flight":"X","lat":0.0,"lon":0.1}]}', 0, 0).single;
+    expect(b.registration, isNull);
+  });
+
+  test('parseHexdbRoute splits ICAO route', () {
+    expect(parseHexdbRoute('EGLL-KJFK'), ('EGLL', 'KJFK'));
+    expect(parseHexdbRoute('EGLL-LEMD-EGLL'), ('EGLL', 'EGLL'));
+    expect(parseHexdbRoute(''), ('', ''));
+  });
 }

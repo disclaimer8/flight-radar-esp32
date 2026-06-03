@@ -29,6 +29,7 @@ List<Aircraft> parseAircraft(String body, double centerLat, double centerLon,
     final int? gsKt = (item['gs'] is num) ? (item['gs'] as num).round() : null;
     final double? track = (item['track'] is num) ? (item['track'] as num).toDouble() : null;
     final int? squawk = (item['squawk'] is String) ? int.tryParse(item['squawk'] as String) : null;
+    final String? registration = (item['r'] is String) ? item['r'] as String : null;
 
     list.add(Aircraft(
       callsign: (item['flight'] as String?)?.trim() ?? '',
@@ -40,6 +41,7 @@ List<Aircraft> parseAircraft(String body, double centerLat, double centerLon,
       onGround: onGround,
       track: track,
       squawk: squawk,
+      registration: registration,
     ));
   }
 
@@ -50,6 +52,15 @@ List<Aircraft> parseAircraft(String body, double centerLat, double centerLon,
 }
 
 double? _toDouble(dynamic v) => (v is num) ? v.toDouble() : null;
+
+/// Split a hexdb.io route ("EGLL-KJFK", possibly multi-leg) into (origin, dest)
+/// = (first, last) ICAO. Empty input -> ('', '').
+(String, String) parseHexdbRoute(String route) {
+  if (route.isEmpty) return ('', '');
+  final first = route.indexOf('-');
+  if (first < 0) return (route, route);
+  return (route.substring(0, first), route.substring(route.lastIndexOf('-') + 1));
+}
 
 /// Impure: fetch nearby aircraft from airplanes.live around (lat, lon).
 class AirplanesClient {

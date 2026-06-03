@@ -12,6 +12,9 @@ class Aircraft {
   final bool onGround;
   final double? track; // true track degrees; null if missing
   final int? squawk;   // transponder code; null if missing
+  final String? registration; // tail number; null if missing
+  final String? origin; // origin ICAO; enriched later, null until then
+  final String? dest;   // destination ICAO; enriched later, null until then
 
   const Aircraft({
     required this.callsign,
@@ -23,7 +26,16 @@ class Aircraft {
     required this.onGround,
     this.track,
     this.squawk,
+    this.registration,
+    this.origin,
+    this.dest,
   });
+
+  Aircraft copyWith({String? origin, String? dest}) => Aircraft(
+        callsign: callsign, type: type, lat: lat, lon: lon, altFt: altFt,
+        gsKt: gsKt, onGround: onGround, track: track, squawk: squawk,
+        registration: registration, origin: origin ?? this.origin, dest: dest ?? this.dest,
+      );
 }
 
 /// Great-circle distance in kilometres. Mirror of `flight_core.h` haversineKm.
