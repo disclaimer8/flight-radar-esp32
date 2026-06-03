@@ -2,6 +2,7 @@
 #include "../../src/flight_core.h"
 #include "../../src/render_core.h"
 #include "../../src/coord_core.h"
+#include "../../src/wifi_config_core.h"
 #include "../../src/ble_core.h"
 #include <cstring>
 
@@ -522,6 +523,33 @@ void test_parse_lat_lon(void) {
     TEST_ASSERT_FLOAT_WITHIN(0.0001, 2.5, b);
 }
 
+void test_parse_wifi_config(void) {
+    uint8_t good[] = {0x57,0x43,0x01, 5,'M','y','N','e','t', 6,'s','e','c','r','e','t'};
+    WifiConfig c = parseWifiConfig(good, sizeof(good));
+    TEST_ASSERT_TRUE(c.ok);
+    TEST_ASSERT_EQUAL_STRING("MyNet", c.ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("secret", c.pass.c_str());
+
+    uint8_t open[] = {0x57,0x43,0x01, 2,'A','P', 0};
+    WifiConfig o = parseWifiConfig(open, sizeof(open));
+    TEST_ASSERT_TRUE(o.ok);
+    TEST_ASSERT_EQUAL_STRING("AP", o.ssid.c_str());
+    TEST_ASSERT_EQUAL_STRING("", o.pass.c_str());
+
+    uint8_t badmagic[] = {0x00,0x43,0x01, 2,'A','P', 0};
+    TEST_ASSERT_FALSE(parseWifiConfig(badmagic, sizeof(badmagic)).ok);
+    uint8_t badver[] = {0x57,0x43,0x09, 2,'A','P', 0};
+    TEST_ASSERT_FALSE(parseWifiConfig(badver, sizeof(badver)).ok);
+    uint8_t ssid0[] = {0x57,0x43,0x01, 0, 0};
+    TEST_ASSERT_FALSE(parseWifiConfig(ssid0, sizeof(ssid0)).ok);
+    uint8_t trunc[] = {0x57,0x43,0x01, 5,'M','y'};
+    TEST_ASSERT_FALSE(parseWifiConfig(trunc, sizeof(trunc)).ok);
+    uint8_t bigssid[] = {0x57,0x43,0x01, 33,'x'};
+    TEST_ASSERT_FALSE(parseWifiConfig(bigssid, sizeof(bigssid)).ok);
+    uint8_t bigpass[] = {0x57,0x43,0x01, 1,'A', 64,'x'};
+    TEST_ASSERT_FALSE(parseWifiConfig(bigpass, sizeof(bigpass)).ok);
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -578,5 +606,6 @@ int main(int, char **) {
     RUN_TEST(test_is_on_rim);
     RUN_TEST(test_query_radius_nm);
     RUN_TEST(test_parse_lat_lon);
+    RUN_TEST(test_parse_wifi_config);
     return UNITY_END();
 }
