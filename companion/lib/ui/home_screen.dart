@@ -4,6 +4,7 @@ import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:permission_handler/permission_handler.dart';
+import '../ble/wifi_provisioner.dart';
 import '../data/photo_client.dart';
 import '../service/gateway_controller.dart';
 import '../service/gateway_engine.dart' show GatewayStatus;
@@ -20,6 +21,11 @@ class _HomeScreenState extends State<HomeScreen> {
   GatewayStatus _status = const GatewayStatus();
   bool _running = false;
   final _photos = PhotoClient();
+  final _ssidCtrl = TextEditingController();
+  final _passCtrl = TextEditingController();
+  final _provisioner = WifiProvisioner();
+  String _provStatus = '';
+  bool _provisioning = false;
   StreamSubscription<GatewayStatus>? _sub;
 
   @override
@@ -83,8 +89,32 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _sendWifi() async {
+    if (_ssidCtrl.text.isEmpty || _provisioning) return;
+    setState(() { _provisioning = true; _provStatus = 'Connecting to device…'; });
+    final sub = _provisioner.states.listen((s) {
+      if (!mounted) return;
+      setState(() {
+        switch (s.phase) {
+          case ProvPhase.connecting: _provStatus = 'Connecting to device…'; break;
+          case ProvPhase.sending:    _provStatus = 'Sending credentials…'; break;
+          case ProvPhase.applying:   _provStatus = 'Device joining Wi-Fi…'; break;
+          case ProvPhase.connected:  _provStatus = 'Connected: ${s.detail}'; break;
+          case ProvPhase.failed:     _provStatus = 'Failed: ${s.detail}'; break;
+          case ProvPhase.idle:       break;
+        }
+      });
+    });
+    await _provisioner.provision(_ssidCtrl.text, _passCtrl.text);
+    await sub.cancel();
+    if (mounted) setState(() => _provisioning = false);
+  }
+
   @override
   void dispose() {
+    _ssidCtrl.dispose();
+    _passCtrl.dispose();
+    _provisioner.dispose();
     _sub?.cancel();
     _controller.dispose();
     super.dispose();
@@ -112,6 +142,44 @@ class _HomeScreenState extends State<HomeScreen> {
                     onPressed: _toggle,
                     child: Text(_running ? 'Stop' : 'Start feeding device'),
                   ),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 12, 24, 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Configure device Wi-Fi',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
+                TextField(
+                  controller: _ssidCtrl,
+                  decoration: const InputDecoration(labelText: 'SSID'),
+                ),
+                TextField(
+                  controller: _passCtrl,
+                  obscureText: true,
+                  decoration: const InputDecoration(labelText: 'Password'),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    FilledButton(
+                      onPressed: (_running || _provisioning) ? null : _sendWifi,
+                      child: const Text('Send to device'),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        _running ? 'Stop feeding to configure device Wi-Fi' : _provStatus,
+                        style: const TextStyle(color: Colors.black54),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
