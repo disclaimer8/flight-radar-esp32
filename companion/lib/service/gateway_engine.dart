@@ -5,6 +5,8 @@ import '../data/airplanes_client.dart';
 import '../data/route_client.dart';
 import '../location/location_service.dart';
 import '../packet/ble_packet.dart';
+import 'alerts.dart';
+import 'notification_service.dart';
 
 const int kRadiusNm = 50;
 
@@ -13,7 +15,9 @@ class GatewayStatus {
   final String ble;
   final int count;
   final String fix;
-  const GatewayStatus({this.ble = 'idle', this.count = 0, this.fix = 'no fix'});
+  final List<Aircraft> aircraft;
+  const GatewayStatus(
+      {this.ble = 'idle', this.count = 0, this.fix = 'no fix', this.aircraft = const []});
 }
 
 /// Platform-agnostic feed engine: owns the BLE link, location, and the
@@ -34,10 +38,14 @@ class GatewayEngine {
   String _fix = 'no fix';
   StreamSubscription<BleStatus>? _bleSub;
   bool _busy = false;
+  final NotificationService _notify = NotificationService();
+  List<Aircraft> _lastAircraft = const [];
+  Set<String> _alerted = {};
 
   void _emit() {
     if (!_statusController.isClosed) {
-      _statusController.add(GatewayStatus(ble: _bleState, count: _count, fix: _fix));
+      _statusController.add(GatewayStatus(
+          ble: _bleState, count: _count, fix: _fix, aircraft: _lastAircraft));
     }
   }
 
@@ -47,6 +55,7 @@ class GatewayEngine {
       _bleState = s.name;
       _emit();
     });
+    await _notify.init();
     await _ble.start();
   }
 
@@ -80,8 +89,23 @@ class GatewayEngine {
       final enriched = <Aircraft>[];
       for (final a in aircraft) {
         final (o, d) = await _routes.lookup(a.callsign);
-        enriched.add(o.isEmpty ? a : a.copyWith(origin: o, dest: d));
+        final dist = haversineKm(fix.lat, fix.lon, a.lat, a.lon);
+        var e = a.copyWith(distKm: dist);
+        if (o.isNotEmpty) e = e.copyWith(origin: o, dest: d);
+        enriched.add(e);
       }
+      _lastAircraft = enriched;
+
+      // Emergency/military alerts (run regardless of foreground/background). A
+      // notification failure must never abort the feed.
+      final pass = computeNewAlerts(enriched, _alerted);
+      _alerted = pass.alerted;
+      for (final a in pass.newAlerts) {
+        try {
+          await _notify.show(a.hex.hashCode & 0x7fffffff, alertTitle(a), alertBody(a));
+        } catch (_) {/* ignore */}
+      }
+
       final packet = encodePacket(fix.lat, fix.lon, enriched);
       final ok = await _ble.sendPacket(packet);
       if (ok) _count = aircraft.length;
