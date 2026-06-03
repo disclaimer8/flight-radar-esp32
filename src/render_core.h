@@ -128,6 +128,8 @@ inline std::string airlineCode(const std::string& callsign) {
 // The widest preset doubles as the fixed API reception radius.
 inline constexpr double kRangePresets[] = {25.0, 50.0, 100.0};
 inline constexpr int    kRangeCount = 3;
+static_assert(kRangeCount == (int)(sizeof(kRangePresets) / sizeof(kRangePresets[0])),
+              "kRangeCount must match kRangePresets length");
 
 // Clamp idx+delta into [0, count-1]. Ladder semantics: no wrap at the ends.
 inline int clampRangeIndex(int idx, int delta, int count) {
