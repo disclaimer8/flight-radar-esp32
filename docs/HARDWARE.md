@@ -55,6 +55,15 @@ The S3's native USB provides auto-reset, so no BOOT-button hold is needed
 (unlike older CH340/CP2102 boards). The port enumerates as
 `/dev/cu.usbmodem*` (macOS). To watch serial: `pio device monitor -b 115200`.
 
+**Wrong-port gotcha:** PlatformIO auto-detects the upload port, but if the
+ESP32-S3 is not the only USB-serial device (e.g. Bluetooth-serial ports from
+AirPods or headphones also appear as `/dev/cu.*`), it can grab the wrong one
+and fail with `Failed to connect … No serial data received`. Fix: pass the
+port explicitly so PlatformIO targets only the S3's usbmodem entry:
+```bash
+pio run -e esp32-s3 -t upload --upload-port /dev/cu.usbmodem*
+```
+
 ## Bring-up gotchas (the ones that actually bit)
 
 ### Boot crash: `StoreProhibited` in `TFT_eSPI::init()`
@@ -101,10 +110,17 @@ unavailable. The phone side is the Flutter companion app in `companion/`
 (Android + iOS); `scripts/ble_send.py` is the laptop smoke-test sender. Wi-Fi
 (2.4 GHz) and BLE share the one radio and coexist fine here — the BLE path is
 low-duty (one short write at a time), and as noted above the NimBLE stack fits
-in SRAM next to the framebuffer and the TLS poll. The v2 wire format caps the
-packet at 15 aircraft (492 B) so it lands in a single ATT write at the
-negotiated MTU. The protocol and source arbitration are in
-[ARCHITECTURE.md](ARCHITECTURE.md).
+in SRAM next to the framebuffer and the TLS poll. The v3 wire format caps the
+packet at 10 aircraft with 48-byte records (12 B header + 10 × 48 B = 492 B),
+so it still lands in a single ATT write at the negotiated MTU. The protocol and
+source arbitration are in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+A second GATT characteristic on the same service — **wifi-config**
+(`f1a90003-7e1d-4c2a-9b3f-1a2b3c4d5e6f`, WRITE + NOTIFY) — carries Wi-Fi
+provisioning from the companion app to the device: the app writes credentials,
+the device applies them and notifies the result (IP address or error code) back.
+This is the second low-duty use of the BLE link; `tzapu/WiFiManager@^2.0.17`
+(added to `lib_deps`) handles the captive-portal fallback on the device side.
 
 > NimBLE 1.x uses the single-argument `onWrite(NimBLECharacteristic*)` callback
 > signature; the 2.x API changed it. Pin to `^1.4.1` to match the firmware.
