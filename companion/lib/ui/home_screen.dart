@@ -42,6 +42,20 @@ class _HomeScreenState extends State<HomeScreen> {
   /// at startForeground time. On iOS, background feeding needs "Always" location
   /// (requested as When-in-Use first, then escalated). Returns true if the
   /// required permissions are granted.
+  /// BLE-only permissions for the on-demand provisioning scan/connect (the
+  /// feeder's full permission set isn't needed just to send Wi-Fi creds).
+  Future<bool> _requestBlePermissions() async {
+    if (Platform.isIOS) {
+      final bt = await Permission.bluetooth.request();
+      return bt.isGranted;
+    }
+    final statuses = await [
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+    ].request();
+    return statuses.values.every((s) => s.isGranted);
+  }
+
   Future<bool> _requestPermissions() async {
     if (Platform.isIOS) {
       final bt = await Permission.bluetooth.request();
@@ -91,6 +105,14 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _sendWifi() async {
     if (_ssidCtrl.text.isEmpty || _provisioning) return;
+    if (!await _requestBlePermissions()) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Bluetooth permission is required to configure the device'),
+        ));
+      }
+      return;
+    }
     setState(() { _provisioning = true; _provStatus = 'Connecting to device…'; });
     final sub = _provisioner.states.listen((s) {
       if (!mounted) return;

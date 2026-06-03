@@ -76,7 +76,11 @@ class WifiProvisioner {
   }
 
   Future<BluetoothDevice?> _scanForDevice() async {
-    await FlutterBluePlus.adapterState.where((s) => s == BluetoothAdapterState.on).first;
+    final on = await FlutterBluePlus.adapterState
+        .where((s) => s == BluetoothAdapterState.on)
+        .first
+        .timeout(const Duration(seconds: 5), onTimeout: () => BluetoothAdapterState.off);
+    if (on != BluetoothAdapterState.on) return null;
     final completer = Completer<BluetoothDevice?>();
     final sub = FlutterBluePlus.onScanResults.listen((results) {
       if (results.isNotEmpty && !completer.isCompleted) completer.complete(results.first.device);
