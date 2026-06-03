@@ -182,6 +182,20 @@ void connectWifi() {
                                                  : "WiFi not connected");
 }
 
+// Reopen the setup portal on demand (long-press). Blocks loop() while active.
+void startPortalOnDemand() {
+    WiFiManager wm;
+    wm.setConfigPortalTimeout(180);
+    char latBuf[16], lonBuf[16];
+    std::snprintf(latBuf, sizeof(latBuf), "%.4f", g_obsLat);
+    std::snprintf(lonBuf, sizeof(lonBuf), "%.4f", g_obsLon);
+    WiFiManagerParameter latParam("lat", "Observer latitude", latBuf, 15);
+    WiFiManagerParameter lonParam("lon", "Observer longitude", lonBuf, 15);
+    setupPortalParams(wm, latParam, lonParam);
+    drawSetupScreen();
+    wm.startConfigPortal("FlightRadar-Setup");
+}
+
 void pollApi() {
     // Called only when WiFi is connected (see loop()). No blocking reconnect here.
 
@@ -398,6 +412,8 @@ void handleTouch() {
         } else if (g == TG_DOWN) {              // zoom out (larger range)
             int n = clampRangeIndex(g_rangeIdx, +1, kRangeCount);
             if (n != g_rangeIdx) { g_rangeIdx = n; saveRangeIdx(); }
+        } else if (g == TG_LONG) {              // long-press: reopen Wi-Fi setup portal
+            startPortalOnDemand();
         }
     } else { // DETAIL
         if (g == TG_LEFT && !g_cache.empty()) {
