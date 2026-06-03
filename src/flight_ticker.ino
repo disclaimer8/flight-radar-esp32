@@ -7,6 +7,7 @@
 #include "config.h"
 #include "flight_core.h"
 #include "render_core.h"
+#include "coord_core.h"
 #include "cst816s.h"
 #include <NimBLEDevice.h>
 #include "ble_core.h"
@@ -46,6 +47,8 @@ enum View { RADAR, DETAIL };
 View    g_view = RADAR;
 size_t  g_idx  = 0;
 int g_rangeIdx = 1;  // index into kRangePresets; default 50 km. Restored from NVS in setup().
+double g_obsLat = MY_LAT;  // observer location; default from config.h, restored from NVS in setup()
+double g_obsLon = MY_LON;
 
 // Touch INT latch: the CST816S pulses INT briefly on a touch event, too short to
 // catch by polling the level each frame. A FALLING-edge ISR latches it; the loop
@@ -110,6 +113,15 @@ void saveRangeIdx() {
     prefs.end();
 }
 
+// Persist the observer location to NVS (written by the Wi-Fi setup portal).
+void saveLocation(double lat, double lon) {
+    Preferences prefs;
+    prefs.begin("radar", false);   // read-write
+    prefs.putDouble("lat", lat);
+    prefs.putDouble("lon", lon);
+    prefs.end();
+}
+
 // Current display range (outer ring) in km, selected by touch zoom. Replaces the
 // old fixed rangeKm(); the API reception radius is separate (see pollApi()).
 static double displayRangeKm() { return kRangePresets[g_rangeIdx]; }
@@ -133,7 +145,7 @@ void pollApi() {
     char url[160];
     std::snprintf(url, sizeof(url),
         "https://api.airplanes.live/v2/point/%.4f/%.4f/%d",
-        (double)MY_LAT, (double)MY_LON, queryRadiusNm(kRangePresets[kRangeCount - 1]));
+        g_obsLat, g_obsLon, queryRadiusNm(kRangePresets[kRangeCount - 1]));
 
     // Cloudflare 301-redirects http->https; talk TLS directly. Public read-only
     // data, so skip cert validation rather than pin a CA.
@@ -147,9 +159,9 @@ void pollApi() {
     int code = http.GET();
     if (code == 200) {
         String payload = http.getString();
-        g_cache = parseNearest(std::string(payload.c_str()), MY_LAT, MY_LON, RADAR_PLOT_CAP, HIDE_GROUND_AIRCRAFT);
+        g_cache = parseNearest(std::string(payload.c_str()), g_obsLat, g_obsLon, RADAR_PLOT_CAP, HIDE_GROUND_AIRCRAFT);
         if (g_idx >= g_cache.size()) g_idx = 0;
-        g_centerLat = MY_LAT; g_centerLon = MY_LON;
+        g_centerLat = g_obsLat; g_centerLon = g_obsLon;
         g_stale = false;
         Serial.printf("poll ok: %u aircraft\n", (unsigned)g_cache.size());
     } else {
@@ -363,15 +375,19 @@ void setup() {
     fb.setColorDepth(16);
     if (!fb.createSprite(240, 240)) Serial.println("sprite alloc failed");
     touch.begin();
-    // Restore the saved display range (default 50 km = index 1), clamped valid.
+    // Restore the saved display range (default 50 km = index 1) + observer location.
     {
         Preferences prefs;
         prefs.begin("radar", true);    // read-only
         int saved = prefs.getInt("rangeIdx", 1);
+        g_obsLat = prefs.getDouble("lat", MY_LAT);
+        g_obsLon = prefs.getDouble("lon", MY_LON);
         prefs.end();
         if (saved < 0) saved = 0;
         if (saved > kRangeCount - 1) saved = kRangeCount - 1;
         g_rangeIdx = saved;
+        g_centerLat = g_obsLat;
+        g_centerLon = g_obsLon;
     }
     attachInterrupt(digitalPinToInterrupt(TOUCH_INT), onTouchISR, FALLING);
 
