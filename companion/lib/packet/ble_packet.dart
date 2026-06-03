@@ -1,0 +1,54 @@
+import 'dart:typed_data';
+import '../data/aircraft.dart';
+
+// Wire protocol — must match ../src/ble_core.h (little-endian).
+const int bleMagic0 = 0x46; // 'F'
+const int bleMagic1 = 0x52; // 'R'
+const int bleVersion = 1;
+const int bleMaxAircraft = 16;
+const int bleHeaderSize = 12;
+const int bleRecordSize = 28;
+
+const int bleFlagGround = 0x01;
+const int bleFlagAltValid = 0x02;
+const int bleFlagGsValid = 0x04;
+
+/// Encode one packet: 12-byte header + up to 16 × 28-byte records.
+/// Records beyond 16 are dropped (the caller passes them nearest-first).
+Uint8List encodePacket(double centerLat, double centerLon, List<Aircraft> aircraft) {
+  final n = aircraft.length > bleMaxAircraft ? bleMaxAircraft : aircraft.length;
+  final out = Uint8List(bleHeaderSize + n * bleRecordSize);
+  final bd = ByteData.sublistView(out);
+
+  out[0] = bleMagic0;
+  out[1] = bleMagic1;
+  out[2] = bleVersion;
+  out[3] = n;
+  bd.setFloat32(4, centerLat, Endian.little);
+  bd.setFloat32(8, centerLon, Endian.little);
+
+  for (var i = 0; i < n; i++) {
+    final a = aircraft[i];
+    final base = bleHeaderSize + i * bleRecordSize;
+    _writeField(out, base, 8, a.callsign);
+    _writeField(out, base + 8, 4, a.type);
+    bd.setFloat32(base + 12, a.lat, Endian.little);
+    bd.setFloat32(base + 16, a.lon, Endian.little);
+    bd.setInt32(base + 20, a.altFt ?? 0, Endian.little);
+    bd.setInt16(base + 24, a.gsKt ?? 0, Endian.little);
+    var flags = 0;
+    if (a.onGround) flags |= bleFlagGround;
+    if (a.altFt != null) flags |= bleFlagAltValid;
+    if (a.gsKt != null) flags |= bleFlagGsValid;
+    out[base + 26] = flags;
+    out[base + 27] = 0; // pad
+  }
+  return out;
+}
+
+/// Write an ASCII field of fixed width: truncate if longer, space-pad if shorter.
+void _writeField(Uint8List out, int offset, int width, String s) {
+  for (var i = 0; i < width; i++) {
+    out[offset + i] = i < s.length ? (s.codeUnitAt(i) & 0x7f) : 0x20; // space
+  }
+}
