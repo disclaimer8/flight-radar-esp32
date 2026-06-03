@@ -1,6 +1,7 @@
 #if defined(ARDUINO)
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiManager.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <TFT_eSPI.h>
@@ -126,17 +127,59 @@ void saveLocation(double lat, double lon) {
 // old fixed rangeKm(); the API reception radius is separate (see pollApi()).
 static double displayRangeKm() { return kRangePresets[g_rangeIdx]; }
 
+// The LCD screen shown while the Wi-Fi setup portal is open.
+void drawSetupScreen() {
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(TFT_CYAN, TFT_BLACK);
+    tft.drawString("SETUP", CX, 70, 4);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.drawString("Join Wi-Fi:", CX, 110, 2);
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.drawString("FlightRadar-Setup", CX, 132, 2);
+    tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    tft.drawString("then open 192.168.4.1", CX, 160, 2);
+}
+
+// Wire the lat/lon parameters + portal callbacks onto a WiFiManager. The two
+// WiFiManagerParameters are owned by the caller (they must outlive the portal).
+void setupPortalParams(WiFiManager& wm, WiFiManagerParameter& latParam,
+                       WiFiManagerParameter& lonParam) {
+    wm.addParameter(&latParam);
+    wm.addParameter(&lonParam);
+    wm.setAPCallback([](WiFiManager*) { drawSetupScreen(); });
+    wm.setSaveParamsCallback([&latParam, &lonParam]() {
+        double la, lo;
+        if (parseLatLon(latParam.getValue(), lonParam.getValue(), la, lo)) {
+            g_obsLat = la;
+            g_obsLon = lo;
+            saveLocation(la, lo);
+        }
+    });
+}
+
 void connectWifi() {
-    WiFi.mode(WIFI_STA);
-    WiFi.setAutoReconnect(true);   // reconnect in the background; loop() never blocks on it
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
-    unsigned long start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) {
-        delay(250); Serial.print(".");
+    WiFiManager wm;
+    wm.setConfigPortalTimeout(180);   // 3 min, then boot offline (BLE fallback)
+
+    char latBuf[16], lonBuf[16];
+    std::snprintf(latBuf, sizeof(latBuf), "%.4f", g_obsLat);
+    std::snprintf(lonBuf, sizeof(lonBuf), "%.4f", g_obsLon);
+    WiFiManagerParameter latParam("lat", "Observer latitude", latBuf, 15);
+    WiFiManagerParameter lonParam("lon", "Observer longitude", lonBuf, 15);
+    setupPortalParams(wm, latParam, lonParam);
+
+    // Seed: with no stored credentials, persist config.h creds so autoConnect
+    // tries them before falling back to the portal.
+    if (WiFi.SSID().isEmpty() && strlen(WIFI_SSID) > 0) {
+        WiFi.persistent(true);
+        WiFi.begin(WIFI_SSID, WIFI_PASS);
     }
-    Serial.println();
+
+    WiFi.setAutoReconnect(true);
+    wm.autoConnect("FlightRadar-Setup");
     Serial.println(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString()
-                                                  : "WiFi connect failed");
+                                                 : "WiFi not connected");
 }
 
 void pollApi() {
