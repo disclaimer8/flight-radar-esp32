@@ -17,9 +17,16 @@ CST816S capacitive touch, ESP32-S3R2).
   carries a short **heading vector** along its true track. The nearest aircraft
   gets a **white ring + callsign label**. Aircraft squawking an **emergency
   code** (7500/7600/7700) blink red with an `EMERGENCY <code>` banner. A red dot
-  appears top-right if the last poll failed.
+  appears top-right if the last poll failed. **Range presets: 25 / 50 / 100 km**
+  (default 50); swipe up = zoom in, swipe down = zoom out, clamped at the ends.
+  A **range readout** shows the current value top-center under "N". Aircraft
+  beyond the display range but still within reception render as **small grey dots
+  on the rim** at their bearing. The selected range persists across reboots.
 - **Detail view** (tap to open) — one flight at a time: callsign, type +
-  compass direction, distance, altitude and speed, with page dots.
+  compass direction, distance, altitude and speed. Below those: **Registration**,
+  **Operator** (3-letter airline ICAO derived from the callsign), and **Route**
+  (origin → dest, e.g. `EGLL > KJFK` — from the BLE packet when present, else a
+  lazy cached hexdb.io lookup on Wi-Fi). Page dots navigate between aircraft.
 - **Source indicator** (bottom-center): green **W** = Wi-Fi live, red **W** =
   Wi-Fi up but the API poll is failing, cyan **B** = data coming over BLE from a
   phone, red **NO LINK** = no fresh data from either source.
@@ -29,6 +36,9 @@ CST816S capacitive touch, ESP32-S3R2).
 | Gesture | Action |
 |---------|--------|
 | Tap (on radar) | Open detail of the nearest flight |
+| Swipe up (on radar) | Zoom in — switch to next smaller range preset |
+| Swipe down (on radar) | Zoom out — switch to next larger range preset |
+| Long-press (on radar) | Open the Wi-Fi setup captive portal |
 | Swipe left / right (in detail) | Next / previous aircraft |
 | Tap or swipe down (in detail) | Back to radar |
 | No touch for 15 s (in detail) | Auto-return to radar |
@@ -36,9 +46,21 @@ CST816S capacitive touch, ESP32-S3R2).
 ## Setup
 
 1. Install PlatformIO Core: `brew install platformio`
-2. `cp src/config.example.h src/config.h` and fill in your Wi-Fi (2.4 GHz only),
-   latitude/longitude, and `RADIUS_NM` (search radius in nautical miles).
-   `config.h` is gitignored — your credentials never reach the repo.
+2. On first boot the device raises a **`FlightRadar-Setup`** Wi-Fi access point.
+   Connect from a phone browser — the captive portal lets you pick the network,
+   enter the password, and set your observer lat/lon without re-flashing. A
+   **long-press** on the radar reopens the portal on demand. If not configured
+   within 180 s the device boots offline (BLE fallback).
+
+   `cp src/config.example.h src/config.h` — the values in `config.h` act as a
+   **seed**: `WIFI_SSID`/`WIFI_PASS` are used only on a fresh device with empty
+   NVS; `MY_LAT`/`MY_LON` are defaults until overridden via the portal.
+   `RADIUS_NM` is **legacy/unused** — the poll radius is derived automatically
+   from the widest range preset (100 km / 54 NM). `config.h` is gitignored —
+   your credentials never reach the repo.
+
+   Alternatively, Wi-Fi credentials can be sent **over BLE from the companion
+   app** ("Configure device Wi-Fi" section) without touching the portal.
 3. Run the host tests: `pio test -e native -f test_core`
 4. Build: `pio run -e esp32-s3`
 5. Flash: `pio run -e esp32-s3 -t upload` (the S3's native USB auto-resets; no
@@ -53,12 +75,14 @@ host unit tests under the `native` environment — no hardware needed.
 | File | Responsibility |
 |------|----------------|
 | `src/flight_core.h` | Poll parsing (ArduinoJson), haversine distance, sort by nearest |
-| `src/render_core.h` | Bearing, polar→screen projection, heading vectors, altitude band, emergency-squawk test, compass points, field formatting (host-tested) |
+| `src/render_core.h` | Bearing, polar→screen projection, heading vectors, altitude band, emergency-squawk test, compass points, field formatting; route/operator helpers (`parseHexdbRoute`, `airlineCode`); range helpers (`kRangePresets`, `clampRangeIndex`, `isOnRim`, `queryRadiusNm`) (host-tested) |
 | `src/ble_core.h` | BLE wire protocol + `parseBlePacket` (host-tested) |
+| `src/coord_core.h` | `parseLatLon` — portal coordinate validation (host-tested) |
+| `src/wifi_config_core.h` | `parseWifiConfig` — BLE Wi-Fi provisioning packet (host-tested) |
 | `src/cst816s.h` | Minimal CST816S touch gesture driver |
 | `src/flight_ticker.ino` | Wi-Fi/HTTP, NimBLE peripheral, TFT_eSPI sprite rendering, touch + radar/detail state machine |
 
-`pio test -e native -f test_core` runs the unit tests (43 cases, including the
+`pio test -e native -f test_core` runs the unit tests (52 cases, including the
 BLE packet parser). The companion app has its own Flutter unit tests:
 `cd companion && flutter test`.
 
@@ -70,20 +94,27 @@ companion can write one compact binary packet of nearby aircraft, and the radar
 re-centers on the packet's GPS and plots them. BLE data is used **only when
 Wi-Fi is down** and the last packet is still fresh (≤ `BLE_FRESHNESS_MS`,
 default 30 s); after that the screen shows **NO LINK**. The wire format
-(v2, header + up to 15 records) and GATT UUIDs are documented in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+(v3, header + up to 10 × 48-byte records) and GATT UUIDs are documented in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). There are **two** GATT
+characteristics: `f1a90002` (aircraft ingest, WRITE) and `f1a90003` (Wi-Fi
+config, WRITE + NOTIFY — used by the BLE provisioning path above).
 
 > **Phone companion app** — `companion/` is a Flutter app (Android **and** iOS,
-> hardware-verified) that polls airplanes.live around the phone's GPS and feeds
-> nearby aircraft to the device over BLE when Wi-Fi is down. It's the production
-> sender for this fallback; `scripts/ble_send.py` remains a laptop smoke-test
-> harness. See [companion/README.md](companion/README.md).
+> hardware-verified). It is both a **viewer** and a feeder: its home screen shows
+> a live list of nearby aircraft cards (photo from planespotters.net, type,
+> distance, route, registration, EMG/MIL badges) and fires a **local
+> notification** when an emergency-squawk or military aircraft appears (works in
+> the background). When Wi-Fi is down it also feeds aircraft to the device over
+> BLE (the production sender for this fallback). It can also provision the
+> device's Wi-Fi credentials over BLE from its "Configure device Wi-Fi" section.
+> `scripts/ble_send.py` remains a laptop smoke-test harness.
+> See [companion/README.md](companion/README.md).
 
 Test it against a flashed device from your laptop:
 
 ```bash
 pip install bleak
-python3 scripts/ble_send.py   # one sample v2 3-aircraft packet near Lisbon
+python3 scripts/ble_send.py   # one sample v3 3-aircraft packet near Lisbon
                               # (incl. a 7700 emergency + an on-ground aircraft)
 ```
 
