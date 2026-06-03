@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
-import 'package:geolocator/geolocator.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../service/gateway_controller.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -26,13 +26,23 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  Future<void> _requestPermissions() async {
-    final perm = await FlutterForegroundTask.checkNotificationPermission();
-    if (perm != NotificationPermission.granted) {
+  /// Request every runtime permission the foreground service needs BEFORE start.
+  /// The location+connectedDevice FGS types require Bluetooth AND location to be
+  /// granted at startForeground time, else Android throws a SecurityException and
+  /// the service is killed. Returns true only if the required ones are granted.
+  Future<bool> _requestPermissions() async {
+    // Notification (Android 13+): for the persistent FGS notification.
+    final notif = await FlutterForegroundTask.checkNotificationPermission();
+    if (notif != NotificationPermission.granted) {
       await FlutterForegroundTask.requestNotificationPermission();
     }
-    var p = await Geolocator.checkPermission();
-    if (p == LocationPermission.denied) p = await Geolocator.requestPermission();
+    // Bluetooth (Android 12+) + foreground location are REQUIRED for the FGS.
+    final statuses = await [
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+      Permission.locationWhenInUse,
+    ].request();
+    return statuses.values.every((s) => s.isGranted);
   }
 
   Future<void> _toggle() async {
@@ -40,7 +50,15 @@ class _HomeScreenState extends State<HomeScreen> {
       await _controller.stop();
       setState(() => _running = false);
     } else {
-      await _requestPermissions();
+      final granted = await _requestPermissions();
+      if (!granted) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Bluetooth and location permissions are required'),
+          ));
+        }
+        return;
+      }
       final ok = await _controller.start();
       setState(() => _running = ok);
     }
