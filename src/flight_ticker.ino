@@ -16,6 +16,11 @@ TFT_eSprite fb  = TFT_eSprite(&tft);   // full-screen 240x240 framebuffer
 CST816S     touch(TOUCH_SDA, TOUCH_SCL, TOUCH_RST, TOUCH_INT);
 
 static const int CX = 120, CY = 120, MAXR = 100;
+
+// Blip color per altBand() index: ground/unknown, <3k, 3-10k, 10-25k, 25-40k, >40k.
+static const uint16_t kAltColors[6] = {
+    TFT_DARKGREY, TFT_RED, TFT_ORANGE, TFT_GREENYELLOW, TFT_CYAN, TFT_BLUE
+};
 // The CST816S emits many INT events per physical touch (down/move/up), and latches
 // the gesture across them. Collapse one touch into one action with a short cooldown.
 static const unsigned long TOUCH_DEBOUNCE_MS = 300;
@@ -131,19 +136,34 @@ void drawRadar() {
         fb.drawLine(CX, CY, ex, ey, shade);
     }
 
-    // blips
+    // blips: colored by altitude, with a heading vector; nearest highlighted.
+    bool blinkOn = (millis() / 500) % 2 == 0;
+    bool anyEmergency = false;
+    int  emergencyCode = 0;
     for (size_t i = 0; i < g_cache.size(); i++) {
         const Aircraft& ac = g_cache[i];
         double b = bearingDeg(g_centerLat, g_centerLon, ac.lat, ac.lon);
         ScreenPoint p = polarToXY(b, ac.distKm, rangeKm(), CX, CY, MAXR);
+
+        uint16_t color = kAltColors[altBand(ac.altFt, ac.onGround)];
+        bool emerg = isEmergencySquawk(ac.squawk);
+        if (emerg) { anyEmergency = true; emergencyCode = ac.squawk; color = blinkOn ? TFT_RED : TFT_DARKGREY; }
+
+        // heading vector
+        if (!std::isnan(ac.track)) {
+            ScreenPoint e = vectorEnd(p, ac.track, 10.0);
+            fb.drawLine(p.x, p.y, e.x, e.y, color);
+        }
+
         if (i == 0) {
-            fb.fillCircle(p.x, p.y, 4, TFT_YELLOW);
+            fb.fillCircle(p.x, p.y, 4, color);
+            fb.drawCircle(p.x, p.y, 6, TFT_WHITE); // nearest ring
             std::string cs = ac.callsign.empty() ? "------" : ac.callsign;
             fb.setTextDatum(TL_DATUM);
-            fb.setTextColor(TFT_YELLOW, TFT_BLACK);
-            fb.drawString(cs.c_str(), p.x + 6, p.y - 4, 2);
+            fb.setTextColor(TFT_WHITE, TFT_BLACK);
+            fb.drawString(cs.c_str(), p.x + 8, p.y - 4, 2);
         } else {
-            fb.fillCircle(p.x, p.y, 2, TFT_GREEN);
+            fb.fillCircle(p.x, p.y, 2, color);
         }
     }
 
@@ -155,6 +175,13 @@ void drawRadar() {
     if (g_cache.empty()) {
         fb.setTextColor(TFT_DARKGREY, TFT_BLACK);
         fb.drawString("NO TRAFFIC", CX, CY + 8, 2);
+    }
+    if (anyEmergency && blinkOn) {
+        char ebuf[20];
+        snprintf(ebuf, sizeof(ebuf), "EMERGENCY %d", emergencyCode);
+        fb.setTextDatum(TC_DATUM);
+        fb.setTextColor(TFT_RED, TFT_BLACK);
+        fb.drawString(ebuf, CX, CY - 40, 2);
     }
     // Source indicator at bottom-center (inside the round panel):
     //   green W = Wi-Fi, red W = Wi-Fi poll failing, cyan B = BLE/phone, red NO LINK = no data.
@@ -189,6 +216,7 @@ void drawDetail() {
     std::string sub = (ac.type.empty() ? "----" : ac.type);
     sub += "  ";
     sub += compassPoint(b);
+    if (ac.squawk != 0) { sub += "  "; sub += std::to_string(ac.squawk); }
     fb.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
     fb.drawString(sub.c_str(), CX, 96, 2);
 
