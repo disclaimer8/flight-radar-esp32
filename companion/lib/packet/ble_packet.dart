@@ -47,6 +47,8 @@ Uint8List encodePacket(double centerLat, double centerLon, List<Aircraft> aircra
 }
 
 /// Write an ASCII field of fixed width: truncate if longer, space-pad if shorter.
+/// Non-ASCII code units are masked to 7 bits (callsigns/types are ICAO [A-Z0-9],
+/// so this never triggers; ble_send.py instead drops non-ASCII — harmless skew).
 void _writeField(Uint8List out, int offset, int width, String s) {
   for (var i = 0; i < width; i++) {
     out[offset + i] = i < s.length ? (s.codeUnitAt(i) & 0x7f) : 0x20; // space

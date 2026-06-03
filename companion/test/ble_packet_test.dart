@@ -58,4 +58,11 @@ void main() {
     expect(bytes[3], 16);
     expect(bytes.length, 12 + 16 * 28);
   });
+
+  test('negative altitude round-trips as signed int32', () {
+    final bytes = encodePacket(0, 0, [_ac(cs: 'LOW1', alt: -1200, gs: 90, ground: false)]);
+    final r = ByteData.sublistView(bytes, 12);
+    expect(r.getInt32(20, Endian.little), -1200);
+    expect(r.getUint8(26) & bleFlagAltValid, bleFlagAltValid);
+  });
 }
