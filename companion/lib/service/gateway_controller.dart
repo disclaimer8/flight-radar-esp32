@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io' show Platform;
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import '../data/aircraft.dart';
 import 'gateway_engine.dart' show GatewayStatus;
 import 'gateway_task_handler.dart';
 import 'ios_gateway_driver.dart';
@@ -46,10 +47,18 @@ class GatewayController {
 
   void _onData(Object data) {
     if (data is Map) {
+      List<Aircraft> aircraft = _last.aircraft;
+      if (data['aircraft'] is List) {
+        aircraft = (data['aircraft'] as List)
+            .whereType<Map>()
+            .map((m) => Aircraft.fromJson(Map<String, dynamic>.from(m)))
+            .toList();
+      }
       _last = GatewayStatus(
         ble: (data['ble'] as String?) ?? _last.ble,
         count: (data['count'] as int?) ?? _last.count,
         fix: (data['fix'] as String?) ?? _last.fix,
+        aircraft: aircraft,
       );
       _statusController.add(_last);
     }

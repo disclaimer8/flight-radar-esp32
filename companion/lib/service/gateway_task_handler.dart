@@ -16,7 +16,12 @@ class GatewayTaskHandler extends TaskHandler {
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
     _sub = _engine.status.listen((s) {
-      FlutterForegroundTask.sendDataToMain({'ble': s.ble, 'count': s.count, 'fix': s.fix});
+      FlutterForegroundTask.sendDataToMain({
+        'ble': s.ble,
+        'count': s.count,
+        'fix': s.fix,
+        'aircraft': s.aircraft.map((a) => a.toJson()).toList(),
+      });
       final connected = s.ble == 'connected';
       FlutterForegroundTask.updateService(
         notificationTitle: 'Feeding Flight Radar',
