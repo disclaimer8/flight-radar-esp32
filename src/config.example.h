@@ -3,10 +3,13 @@
 // config.h is gitignored — secrets never reach the repo.
 
 // --- Wi-Fi (2.4 GHz only; ESP32 has no 5 GHz radio) ---
+// These are a SEED only: used on a fresh device with empty NVS. Normally you
+// provision Wi-Fi (and the observer location) via the "FlightRadar-Setup" captive
+// portal — no re-flash needed. Leave as placeholders to always start in the portal.
 #define WIFI_SSID   "YourNetwork"
 #define WIFI_PASS   "YourPassword"
 
-// --- Observer location (decimal degrees) ---
+// --- Observer location (decimal degrees; default until set via the setup portal) ---
 #define MY_LAT      48.1351
 #define MY_LON      11.5820
 
