@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:geolocator/geolocator.dart';
@@ -13,12 +15,15 @@ class _HomeScreenState extends State<HomeScreen> {
   final _controller = GatewayController();
   GatewayStatus _status = const GatewayStatus();
   bool _running = false;
+  StreamSubscription<GatewayStatus>? _sub;
 
   @override
   void initState() {
     super.initState();
     _controller.init();
-    _controller.status.listen((s) => setState(() => _status = s));
+    _sub = _controller.status.listen((s) {
+      if (mounted) setState(() => _status = s);
+    });
   }
 
   Future<void> _requestPermissions() async {
@@ -43,6 +48,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _sub?.cancel();
     _controller.dispose();
     super.dispose();
   }
