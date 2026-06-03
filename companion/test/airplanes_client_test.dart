@@ -39,4 +39,24 @@ void main() {
     expect(parseAircraft('{"ac":[]}', 0, 0), isEmpty);
     expect(parseAircraft('{}', 0, 0), isEmpty);
   });
+
+  test('parseAircraft skips entries missing lat or lon', () {
+    const body = '''
+{"ac":[
+  {"flight":"HASLL","t":"A320","lat":48.1,"lon":11.0,"alt_baro":1000,"gs":300},
+  {"flight":"NOLAT","t":"A320","lon":11.0,"alt_baro":1000,"gs":300},
+  {"flight":"NOLON","t":"A320","lat":48.2,"alt_baro":1000,"gs":300}
+]}
+''';
+    final list = parseAircraft(body, 48.0, 11.0);
+    expect(list.length, 1);
+    expect(list.single.callsign, 'HASLL');
+  });
+
+  test('parseAircraft skips non-object entries in the ac array', () {
+    const body = '{"ac":[null, 5, "x", {"flight":"OK1","t":"A320","lat":48.1,"lon":11.0,"alt_baro":1000,"gs":300}]}';
+    final list = parseAircraft(body, 48.0, 11.0);
+    expect(list.length, 1);
+    expect(list.single.callsign, 'OK1');
+  });
 }
