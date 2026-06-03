@@ -105,9 +105,12 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       });
     });
-    await _provisioner.provision(_ssidCtrl.text, _passCtrl.text);
-    await sub.cancel();
-    if (mounted) setState(() => _provisioning = false);
+    try {
+      await _provisioner.provision(_ssidCtrl.text, _passCtrl.text);
+    } finally {
+      await sub.cancel();
+      if (mounted) setState(() => _provisioning = false);
+    }
   }
 
   @override
