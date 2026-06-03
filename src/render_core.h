@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <utility>
 #include "flight_core.h"   // Aircraft, ftToM, ktToKmh
 
 // Initial great-circle bearing observer->target, degrees, north=0, clockwise, [0,360).
@@ -96,4 +97,27 @@ inline const char* compassPoint(double bearing) {
     double b = std::fmod(bearing + 360.0, 360.0);
     int idx = ((int)std::lround(b / 45.0)) % 8;
     return pts[idx];
+}
+
+// Split a hexdb.io route string ("EGLL-KJFK", possibly multi-leg) into
+// (origin, dest) = (first, last) ICAO codes. Empty pair on empty input.
+inline std::pair<std::string, std::string> parseHexdbRoute(const std::string& route) {
+    if (route.empty()) return {"", ""};
+    size_t first = route.find('-');
+    if (first == std::string::npos) return {route, route};
+    std::string origin = route.substr(0, first);
+    size_t last = route.find_last_of('-');
+    std::string dest = route.substr(last + 1);
+    return {origin, dest};
+}
+
+// Airline ICAO code = first 3 chars of an airline callsign (letters). "" for
+// tail-number callsigns (digits) or short callsigns.
+inline std::string airlineCode(const std::string& callsign) {
+    if (callsign.size() < 3) return "";
+    for (int i = 0; i < 3; i++) {
+        char c = callsign[i];
+        if (c < 'A' || c > 'Z') return "";
+    }
+    return callsign.substr(0, 3);
 }

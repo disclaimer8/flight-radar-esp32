@@ -436,6 +436,29 @@ void test_ble_v2_track_squawk(void) {
     TEST_ASSERT_EQUAL_INT(0, q.aircraft[0].squawk);
 }
 
+void test_parse_hexdb_route(void) {
+    auto r = parseHexdbRoute("EGLL-KJFK");
+    TEST_ASSERT_EQUAL_STRING("EGLL", r.first.c_str());
+    TEST_ASSERT_EQUAL_STRING("KJFK", r.second.c_str());
+    auto multi = parseHexdbRoute("EGLL-LEMD-EGLL"); // first->last
+    TEST_ASSERT_EQUAL_STRING("EGLL", multi.first.c_str());
+    TEST_ASSERT_EQUAL_STRING("EGLL", multi.second.c_str());
+    auto empty = parseHexdbRoute("");
+    TEST_ASSERT_EQUAL_STRING("", empty.first.c_str());
+    TEST_ASSERT_EQUAL_STRING("", empty.second.c_str());
+    auto one = parseHexdbRoute("EGLL");
+    TEST_ASSERT_EQUAL_STRING("EGLL", one.first.c_str());
+    TEST_ASSERT_EQUAL_STRING("EGLL", one.second.c_str());
+}
+
+void test_airline_code(void) {
+    TEST_ASSERT_EQUAL_STRING("BAW", airlineCode("BAW117").c_str());
+    TEST_ASSERT_EQUAL_STRING("DLH", airlineCode("DLH4AB").c_str());
+    TEST_ASSERT_EQUAL_STRING("", airlineCode("N12345").c_str());
+    TEST_ASSERT_EQUAL_STRING("", airlineCode("AB").c_str());
+    TEST_ASSERT_EQUAL_STRING("", airlineCode("").c_str());
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -484,5 +507,7 @@ int main(int, char **) {
     RUN_TEST(test_is_emergency_squawk);
     RUN_TEST(test_parse_nearest_track_squawk);
     RUN_TEST(test_ble_v2_track_squawk);
+    RUN_TEST(test_parse_hexdb_route);
+    RUN_TEST(test_airline_code);
     return UNITY_END();
 }
