@@ -49,18 +49,23 @@ class GatewayEngine {
 
   /// One feed cycle. Re-entrancy-guarded: a tick is skipped if the previous
   /// cycle is still running (a cycle can exceed the driver's interval).
-  Future<void> runCycle() async {
+  ///
+  /// [providedFix] lets a driver supply a center it already has (iOS feeds the
+  /// latest position from its keep-alive stream), avoiding a per-cycle
+  /// `getCurrentPosition` that can stall the cycle. When null, the engine
+  /// fetches its own one-shot fix (Android).
+  Future<void> runCycle({GpsFix? providedFix}) async {
     if (_busy) return;
     _busy = true;
     try {
-      await _cycle();
+      await _cycle(providedFix);
     } finally {
       _busy = false;
     }
   }
 
-  Future<void> _cycle() async {
-    final fix = await _location.currentFix();
+  Future<void> _cycle(GpsFix? providedFix) async {
+    final fix = providedFix ?? await _location.currentFix();
     if (fix == null) {
       _fix = 'no fix';
       _emit();
