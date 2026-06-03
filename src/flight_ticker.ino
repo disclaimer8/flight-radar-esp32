@@ -10,6 +10,7 @@
 #include "cst816s.h"
 #include <NimBLEDevice.h>
 #include "ble_core.h"
+#include <map>
 
 TFT_eSPI    tft = TFT_eSPI();
 TFT_eSprite fb  = TFT_eSprite(&tft);   // full-screen 240x240 framebuffer
@@ -68,6 +69,32 @@ class IngestCallbacks : public NimBLECharacteristicCallbacks {
         g_blePacketReady = true;
     }
 };
+
+std::map<std::string, std::pair<std::string, std::string>> g_routeCache; // callsign -> (origin,dest)
+
+// Blocking hexdb.io route lookup; caches by callsign (incl. empties to avoid
+// re-hitting). Returns (origin,dest) or ("",""). Call only when WiFi is connected.
+std::pair<std::string, std::string> lookupRoute(const std::string& callsign) {
+    if (callsign.empty()) return {"", ""};
+    auto it = g_routeCache.find(callsign);
+    if (it != g_routeCache.end()) return it->second;
+    std::pair<std::string, std::string> result{"", ""};
+    char url[96];
+    std::snprintf(url, sizeof(url), "https://hexdb.io/api/v1/route/icao/%s", callsign.c_str());
+    WiFiClientSecure client; client.setInsecure();
+    HTTPClient http; http.begin(client, url);
+    http.setUserAgent("flight-ticker-esp32");
+    http.setConnectTimeout(6000); http.setTimeout(6000);
+    if (http.GET() == 200) {
+        JsonDocument doc;
+        if (!deserializeJson(doc, http.getString()) && doc["route"].is<const char*>()) {
+            result = parseHexdbRoute(std::string(doc["route"].as<const char*>()));
+        }
+    }
+    http.end();
+    g_routeCache[callsign] = result;
+    return result;
+}
 
 static double rangeKm() { return RADIUS_NM * 1.852; }
 
@@ -210,7 +237,7 @@ void drawDetail() {
 
     std::string cs = ac.callsign.empty() ? "------" : ac.callsign;
     fb.setTextColor(TFT_CYAN, TFT_BLACK);
-    fb.drawString(cs.c_str(), CX, 66, 4);
+    fb.drawString(cs.c_str(), CX, 54, 4);
 
     double b = bearingDeg(g_centerLat, g_centerLon, ac.lat, ac.lon);
     std::string sub = (ac.type.empty() ? "----" : ac.type);
@@ -218,15 +245,33 @@ void drawDetail() {
     sub += compassPoint(b);
     if (ac.squawk != 0) { sub += "  "; sub += std::to_string(ac.squawk); }
     fb.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-    fb.drawString(sub.c_str(), CX, 96, 2);
+    fb.drawString(sub.c_str(), CX, 80, 2);
 
     // Font 4 has the full ASCII set ("km"); font 6 is digits-only, so use 4 here.
     fb.setTextColor(TFT_YELLOW, TFT_BLACK);
-    fb.drawString(fmtDist(ac.distKm).c_str(), CX, 128, 4);
+    fb.drawString(fmtDist(ac.distKm).c_str(), CX, 106, 4);
 
     std::string row = fmtAlt(ac) + "   " + fmtSpeed(ac);
     fb.setTextColor(TFT_WHITE, TFT_BLACK);
-    fb.drawString(row.c_str(), CX, 168, 2);
+    fb.drawString(row.c_str(), CX, 132, 2);
+
+    // Reg / Op / Route block. Route origin/dest comes from the BLE packet when
+    // present, else a lazy (cached) hexdb.io lookup on Wi-Fi. TC_DATUM so each
+    // line draws downward from its y; rows below the fields, above the dots.
+    std::string rOrigin = ac.origin, rDest = ac.dest;
+    if (rOrigin.empty() && WiFi.status() == WL_CONNECTED) {
+        auto rt = lookupRoute(ac.callsign);
+        rOrigin = rt.first; rDest = rt.second;
+    }
+    fb.setTextDatum(TC_DATUM);
+    fb.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    if (!ac.registration.empty())
+        fb.drawString(("Reg " + ac.registration).c_str(), CX, 150, 2);
+    std::string op = airlineCode(ac.callsign);
+    if (!op.empty())
+        fb.drawString(("Op " + op).c_str(), CX, 168, 2);
+    if (!rOrigin.empty())
+        fb.drawString((rOrigin + " > " + rDest).c_str(), CX, 186, 2);
 
     // page-position dots, spacing shrunk so the row always fits ~180px wide
     int n = (int)g_cache.size();
@@ -236,7 +281,7 @@ void drawDetail() {
         int startX = CX - (n - 1) * spacing / 2;
         for (int i = 0; i < n; i++) {
             uint16_t c = (i == (int)g_idx) ? TFT_CYAN : TFT_DARKGREY;
-            fb.fillCircle(startX + i * spacing, 196, 2, c);
+            fb.fillCircle(startX + i * spacing, 210, 2, c);
         }
     }
 
