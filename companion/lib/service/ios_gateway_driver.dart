@@ -16,28 +16,35 @@ class IosGatewayDriver {
   Timer? _timer;
 
   Future<bool> start() async {
+    if (_engine != null) return false; // already running
+
     final engine = GatewayEngine();
     _engine = engine;
     _engineSub = engine.status.listen((s) {
       if (!_statusController.isClosed) _statusController.add(s);
     });
 
-    // Keep-alive: a continuous background location stream keeps the Dart event
-    // loop running while backgrounded, so the timer keeps firing. The position
-    // values are unused — the engine fetches its own fix per cycle.
-    _keepAliveSub = Geolocator.getPositionStream(
-      locationSettings: AppleSettings(
-        accuracy: LocationAccuracy.high,
-        allowBackgroundLocationUpdates: true,
-        pauseLocationUpdatesAutomatically: false,
-        showBackgroundLocationIndicator: true,
-        activityType: ActivityType.other,
-      ),
-    ).listen((_) {}, onError: (_) {});
+    try {
+      // Keep-alive: a continuous background location stream keeps the Dart event
+      // loop running while backgrounded, so the timer keeps firing. The position
+      // values are unused — the engine fetches its own fix per cycle.
+      _keepAliveSub = Geolocator.getPositionStream(
+        locationSettings: AppleSettings(
+          accuracy: LocationAccuracy.high,
+          allowBackgroundLocationUpdates: true,
+          pauseLocationUpdatesAutomatically: false,
+          showBackgroundLocationIndicator: true,
+          activityType: ActivityType.other,
+        ),
+      ).listen((_) {}, onError: (_) {});
 
-    await engine.start();
-    _timer = Timer.periodic(const Duration(seconds: 10), (_) => engine.runCycle());
-    return true;
+      await engine.start();
+      _timer = Timer.periodic(const Duration(seconds: 10), (_) => engine.runCycle());
+      return true;
+    } catch (_) {
+      await stop(); // tear down the partial state
+      return false;
+    }
   }
 
   Future<void> stop() async {
