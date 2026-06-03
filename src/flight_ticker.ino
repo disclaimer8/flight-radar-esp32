@@ -169,20 +169,30 @@ void drawRadar() {
         fb.drawLine(CX, CY, ex, ey, shade);
     }
 
-    // blips: colored by altitude, with a heading vector; nearest highlighted.
+    // blips: in-range keep altitude color + heading vector (nearest gets a white
+    // ring + label); aircraft beyond the display range render as small grey rim
+    // dots at their bearing. Emergencies are detected regardless of range.
     bool blinkOn = (millis() / 500) % 2 == 0;
     bool anyEmergency = false;
     int  emergencyCode = 0;
+    double dr = displayRangeKm();
     for (size_t i = 0; i < g_cache.size(); i++) {
         const Aircraft& ac = g_cache[i];
         double b = bearingDeg(g_centerLat, g_centerLon, ac.lat, ac.lon);
-        ScreenPoint p = polarToXY(b, ac.distKm, displayRangeKm(), CX, CY, MAXR);
+        ScreenPoint p = polarToXY(b, ac.distKm, dr, CX, CY, MAXR);
+
+        bool emerg = isEmergencySquawk(ac.squawk);
+        if (emerg) { anyEmergency = true; emergencyCode = ac.squawk; }
+
+        if (isOnRim(ac.distKm, dr)) {
+            uint16_t rc = (emerg && blinkOn) ? TFT_RED : TFT_DARKGREY;
+            fb.fillCircle(p.x, p.y, 1, rc);
+            continue;
+        }
 
         uint16_t color = kAltColors[altBand(ac.altFt, ac.onGround)];
-        bool emerg = isEmergencySquawk(ac.squawk);
-        if (emerg) { anyEmergency = true; emergencyCode = ac.squawk; color = blinkOn ? TFT_RED : TFT_DARKGREY; }
+        if (emerg) color = blinkOn ? TFT_RED : TFT_DARKGREY;
 
-        // heading vector
         if (!std::isnan(ac.track)) {
             ScreenPoint e = vectorEnd(p, ac.track, 10.0);
             fb.drawLine(p.x, p.y, e.x, e.y, color);
@@ -190,7 +200,7 @@ void drawRadar() {
 
         if (i == 0) {
             fb.fillCircle(p.x, p.y, 4, color);
-            fb.drawCircle(p.x, p.y, 6, TFT_WHITE); // nearest ring
+            fb.drawCircle(p.x, p.y, 6, TFT_WHITE); // nearest ring (in-range only)
             std::string cs = ac.callsign.empty() ? "------" : ac.callsign;
             fb.setTextDatum(TL_DATUM);
             fb.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -229,6 +239,13 @@ void drawRadar() {
         fb.setTextColor(TFT_RED, TFT_BLACK);
         fb.drawString("NO LINK", CX, 236, 2);
     }
+
+    // Range readout (top-left): names the outer-ring distance / current zoom.
+    char rbuf[8];
+    std::snprintf(rbuf, sizeof(rbuf), "%dkm", (int)dr);
+    fb.setTextDatum(TL_DATUM);
+    fb.setTextColor(TFT_DARKGREEN, TFT_BLACK);
+    fb.drawString(rbuf, 4, 4, 2);
 
     fb.pushSprite(0, 0);
 }
