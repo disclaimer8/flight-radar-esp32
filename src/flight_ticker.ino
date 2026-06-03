@@ -17,6 +17,9 @@ TFT_eSprite fb  = TFT_eSprite(&tft);   // full-screen 240x240 framebuffer
 CST816S     touch(TOUCH_SDA, TOUCH_SCL, TOUCH_RST, TOUCH_INT);
 
 static const int CX = 120, CY = 120, MAXR = 100;
+// Wi-Fi parse cap: keep more than the display cap so distant aircraft survive to
+// be drawn as rim dots (the nearest 24 by distance). The detail carousel pages all.
+static const int RADAR_PLOT_CAP = 24;
 
 // Blip color per altBand() index: ground/unknown, <3k, 3-10k, 10-25k, 25-40k, >40k.
 static const uint16_t kAltColors[6] = {
@@ -41,6 +44,7 @@ unsigned long g_bleLastRx = 0;        // millis of last accepted BLE packet
 enum View { RADAR, DETAIL };
 View    g_view = RADAR;
 size_t  g_idx  = 0;
+int g_rangeIdx = 1;  // index into kRangePresets; default 50 km. Restored from NVS in setup().
 
 // Touch INT latch: the CST816S pulses INT briefly on a touch event, too short to
 // catch by polling the level each frame. A FALLING-edge ISR latches it; the loop
@@ -96,7 +100,9 @@ std::pair<std::string, std::string> lookupRoute(const std::string& callsign) {
     return result;
 }
 
-static double rangeKm() { return RADIUS_NM * 1.852; }
+// Current display range (outer ring) in km, selected by touch zoom. Replaces the
+// old fixed rangeKm(); the API reception radius is separate (see pollApi()).
+static double displayRangeKm() { return kRangePresets[g_rangeIdx]; }
 
 void connectWifi() {
     WiFi.mode(WIFI_STA);
@@ -117,7 +123,7 @@ void pollApi() {
     char url[160];
     std::snprintf(url, sizeof(url),
         "https://api.airplanes.live/v2/point/%.4f/%.4f/%d",
-        (double)MY_LAT, (double)MY_LON, (int)RADIUS_NM);
+        (double)MY_LAT, (double)MY_LON, queryRadiusNm(kRangePresets[kRangeCount - 1]));
 
     // Cloudflare 301-redirects http->https; talk TLS directly. Public read-only
     // data, so skip cert validation rather than pin a CA.
@@ -131,7 +137,7 @@ void pollApi() {
     int code = http.GET();
     if (code == 200) {
         String payload = http.getString();
-        g_cache = parseNearest(std::string(payload.c_str()), MY_LAT, MY_LON, MAX_AIRCRAFT, HIDE_GROUND_AIRCRAFT);
+        g_cache = parseNearest(std::string(payload.c_str()), MY_LAT, MY_LON, RADAR_PLOT_CAP, HIDE_GROUND_AIRCRAFT);
         if (g_idx >= g_cache.size()) g_idx = 0;
         g_centerLat = MY_LAT; g_centerLon = MY_LON;
         g_stale = false;
@@ -170,7 +176,7 @@ void drawRadar() {
     for (size_t i = 0; i < g_cache.size(); i++) {
         const Aircraft& ac = g_cache[i];
         double b = bearingDeg(g_centerLat, g_centerLon, ac.lat, ac.lon);
-        ScreenPoint p = polarToXY(b, ac.distKm, rangeKm(), CX, CY, MAXR);
+        ScreenPoint p = polarToXY(b, ac.distKm, displayRangeKm(), CX, CY, MAXR);
 
         uint16_t color = kAltColors[altBand(ac.altFt, ac.onGround)];
         bool emerg = isEmergencySquawk(ac.squawk);

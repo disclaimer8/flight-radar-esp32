@@ -11,7 +11,8 @@
 #define MY_LON      11.5820
 
 // --- Search + behavior tunables ---
-#define RADIUS_NM         30      // search radius, nautical miles (<=250)
+#define RADIUS_NM         27      // (legacy) no longer used: the poll radius is now
+                                  // derived from the widest range preset (100 km / 54 NM)
 #define POLL_INTERVAL_MS  15000   // API poll period (rate limit is 1 req/s)
 #define MAX_AIRCRAFT      10      // how many nearest to show on radar / page through
 #define IDLE_RETURN_MS    15000   // detail view auto-returns to radar after this idle
