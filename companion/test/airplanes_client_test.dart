@@ -100,4 +100,27 @@ void main() {
     expect(parseHexdbRoute('EGLL-LEMD-EGLL'), ('EGLL', 'EGLL'));
     expect(parseHexdbRoute(''), ('', ''));
   });
+
+  test('parseAircraft extracts hex, desc, military, emergency', () {
+    const body = '''
+{"ac":[
+  {"flight":"RRR1","t":"A400","desc":"Airbus A400M","hex":"43C123","lat":0.0,"lon":0.1,"alt_baro":8000,"gs":300,"dbFlags":1},
+  {"flight":"EMG1","t":"B738","hex":"AABBCC","lat":0.0,"lon":0.2,"alt_baro":10000,"gs":300,"squawk":"7700"},
+  {"flight":"EMG2","t":"A320","hex":"DDEEFF","lat":0.0,"lon":0.3,"alt_baro":9000,"gs":300,"emergency":"general"},
+  {"flight":"NORM","t":"A320","hex":"112233","lat":0.0,"lon":0.4,"alt_baro":9000,"gs":300,"squawk":"1200","emergency":"none","dbFlags":8}
+]}
+''';
+    final list = parseAircraft(body, 0.0, 0.0);
+    final rrr = list.firstWhere((a) => a.callsign == 'RRR1');
+    expect(rrr.hex, '43c123');
+    expect(rrr.desc, 'Airbus A400M');
+    expect(rrr.isMilitary, isTrue);
+    expect(rrr.isEmergency, isFalse);
+    expect(list.firstWhere((a) => a.callsign == 'EMG1').isEmergency, isTrue);
+    expect(list.firstWhere((a) => a.callsign == 'EMG2').isEmergency, isTrue);
+    final norm = list.firstWhere((a) => a.callsign == 'NORM');
+    expect(norm.isEmergency, isFalse);
+    expect(norm.isMilitary, isFalse);
+    expect(norm.hex, '112233');
+  });
 }

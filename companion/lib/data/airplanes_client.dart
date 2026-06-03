@@ -30,6 +30,13 @@ List<Aircraft> parseAircraft(String body, double centerLat, double centerLon,
     final double? track = (item['track'] is num) ? (item['track'] as num).toDouble() : null;
     final int? squawk = (item['squawk'] is String) ? int.tryParse(item['squawk'] as String) : null;
     final String? registration = (item['r'] is String) ? item['r'] as String : null;
+    final String hex = (item['hex'] as String?)?.toLowerCase() ?? '';
+    final String desc = (item['desc'] as String?)?.trim() ?? '';
+    final bool isMilitary = (((item['dbFlags'] as num?)?.toInt()) ?? 0) & 1 != 0;
+    final em = item['emergency'] as String?;
+    final bool emActive = em != null && em.isNotEmpty && em != 'none';
+    final bool isEmergency =
+        squawk == 7500 || squawk == 7600 || squawk == 7700 || emActive;
 
     list.add(Aircraft(
       callsign: (item['flight'] as String?)?.trim() ?? '',
@@ -42,6 +49,10 @@ List<Aircraft> parseAircraft(String body, double centerLat, double centerLon,
       track: track,
       squawk: squawk,
       registration: registration,
+      hex: hex,
+      desc: desc,
+      isMilitary: isMilitary,
+      isEmergency: isEmergency,
     ));
   }
 
