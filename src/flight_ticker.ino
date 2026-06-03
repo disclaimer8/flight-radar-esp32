@@ -84,7 +84,7 @@ std::pair<std::string, std::string> lookupRoute(const std::string& callsign) {
     WiFiClientSecure client; client.setInsecure();
     HTTPClient http; http.begin(client, url);
     http.setUserAgent("flight-ticker-esp32");
-    http.setConnectTimeout(6000); http.setTimeout(6000);
+    http.setConnectTimeout(2500); http.setTimeout(2500);
     if (http.GET() == 200) {
         JsonDocument doc;
         if (!deserializeJson(doc, http.getString()) && doc["route"].is<const char*>()) {
@@ -270,7 +270,7 @@ void drawDetail() {
     std::string op = airlineCode(ac.callsign);
     if (!op.empty())
         fb.drawString(("Op " + op).c_str(), CX, 168, 2);
-    if (!rOrigin.empty())
+    if (!rOrigin.empty() && rOrigin != rDest)
         fb.drawString((rOrigin + " > " + rDest).c_str(), CX, 186, 2);
 
     // page-position dots, spacing shrunk so the row always fits ~180px wide
