@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../service/gateway_controller.dart';
+import '../service/gateway_engine.dart' show GatewayStatus;
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
