@@ -11,15 +11,17 @@
 static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "BLE wire format assumes little-endian");
 constexpr uint8_t BLE_MAGIC0       = 0x46; // 'F'
 constexpr uint8_t BLE_MAGIC1       = 0x52; // 'R'
-constexpr uint8_t BLE_VERSION      = 1;
-constexpr size_t  BLE_MAX_AIRCRAFT = 16;
+constexpr uint8_t BLE_VERSION      = 2;
+constexpr size_t  BLE_MAX_AIRCRAFT = 15;
 constexpr size_t  BLE_HEADER_SIZE  = 12;
-constexpr size_t  BLE_RECORD_SIZE  = 28;
-constexpr size_t  BLE_MAX_PACKET   = BLE_HEADER_SIZE + BLE_MAX_AIRCRAFT * BLE_RECORD_SIZE; // 460
+constexpr size_t  BLE_RECORD_SIZE  = 32;
+constexpr size_t  BLE_MAX_PACKET   = BLE_HEADER_SIZE + BLE_MAX_AIRCRAFT * BLE_RECORD_SIZE; // 492
 
 constexpr uint8_t BLE_FLAG_GROUND    = 0x01;
 constexpr uint8_t BLE_FLAG_ALT_VALID = 0x02;
 constexpr uint8_t BLE_FLAG_GS_VALID  = 0x04;
+constexpr uint8_t BLE_FLAG_TRACK_VALID  = 0x08;
+constexpr uint8_t BLE_FLAG_SQUAWK_VALID = 0x10;
 
 struct BlePacket {
     bool   ok = false;
@@ -72,6 +74,11 @@ inline BlePacket parseBlePacket(const uint8_t* buf, size_t len, size_t maxN, boo
         if (hideGround && ac.onGround) continue; // drop ground traffic before sort/cap
         ac.altFt = (flags & BLE_FLAG_ALT_VALID) ? (double)altFt : NAN;
         ac.gsKt  = (flags & BLE_FLAG_GS_VALID)  ? (double)gsKt  : NAN;
+        int16_t track; uint16_t squawk;
+        std::memcpy(&track,  r + 28, 2);
+        std::memcpy(&squawk, r + 30, 2);
+        ac.track  = (flags & BLE_FLAG_TRACK_VALID)  ? (double)track : NAN;
+        ac.squawk = (flags & BLE_FLAG_SQUAWK_VALID) ? (int)squawk   : 0;
         ac.distKm = haversineKm(out.centerLat, out.centerLon, ac.lat, ac.lon);
         out.aircraft.push_back(ac);
     }

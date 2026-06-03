@@ -251,11 +251,14 @@ static std::vector<uint8_t> bleHeader(uint8_t count, float clat, float clon) {
     return v;
 }
 static void bleAddRecord(std::vector<uint8_t>& v, const char* cs, const char* ty,
-                         float lat, float lon, int32_t alt, int16_t gs, uint8_t flags) {
+                         float lat, float lon, int32_t alt, int16_t gs, uint8_t flags,
+                         int16_t track = 0, uint16_t squawk = 0) {
     blePutField(v, cs, 8); blePutField(v, ty, 4);
     blePutF32(v, lat); blePutF32(v, lon);
     blePutI32(v, alt); blePutI16(v, gs);
-    v.push_back(flags); v.push_back(0);
+    v.push_back(flags); v.push_back(0);   // flags + pad
+    blePutI16(v, track);
+    uint8_t b[2]; std::memcpy(b, &squawk, 2); v.insert(v.end(), b, b + 2); // u16 squawk LE
 }
 
 void test_ble_valid_two_aircraft(void) {
@@ -415,6 +418,24 @@ void test_parse_nearest_track_squawk(void) {
     TEST_ASSERT_EQUAL_INT(0, out2[0].squawk);
 }
 
+void test_ble_v2_track_squawk(void) {
+    std::vector<uint8_t> v = bleHeader(1, 48.0f, 11.0f);
+    bleAddRecord(v, "DLH", "A320", 48.1f, 11.0f, 35000, 450,
+                 BLE_FLAG_ALT_VALID | BLE_FLAG_GS_VALID | BLE_FLAG_TRACK_VALID | BLE_FLAG_SQUAWK_VALID,
+                 287, 7700);
+    BlePacket p = parseBlePacket(v.data(), v.size(), 5);
+    TEST_ASSERT_TRUE(p.ok);
+    TEST_ASSERT_EQUAL_UINT32(1, p.aircraft.size());
+    TEST_ASSERT_FLOAT_WITHIN(0.5, 287.0, p.aircraft[0].track);
+    TEST_ASSERT_EQUAL_INT(7700, p.aircraft[0].squawk);
+    // Invalid flags -> track NAN, squawk 0.
+    std::vector<uint8_t> v2 = bleHeader(1, 0.0f, 0.0f);
+    bleAddRecord(v2, "X", "B738", 0.0f, 0.1f, 1000, 100, BLE_FLAG_ALT_VALID, 123, 1200);
+    BlePacket q = parseBlePacket(v2.data(), v2.size(), 5);
+    TEST_ASSERT_TRUE(std::isnan(q.aircraft[0].track));
+    TEST_ASSERT_EQUAL_INT(0, q.aircraft[0].squawk);
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -462,5 +483,6 @@ int main(int, char **) {
     RUN_TEST(test_alt_band);
     RUN_TEST(test_is_emergency_squawk);
     RUN_TEST(test_parse_nearest_track_squawk);
+    RUN_TEST(test_ble_v2_track_squawk);
     return UNITY_END();
 }
