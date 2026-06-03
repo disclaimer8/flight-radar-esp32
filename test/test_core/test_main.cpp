@@ -398,6 +398,23 @@ void test_is_emergency_squawk(void) {
     TEST_ASSERT_FALSE(isEmergencySquawk(0));
 }
 
+void test_parse_nearest_track_squawk(void) {
+    const char* json =
+        "{\"ac\":["
+        "{\"flight\":\"ABC\",\"t\":\"A320\",\"lat\":0.0,\"lon\":0.1,\"alt_baro\":10000,"
+        "\"gs\":300,\"track\":275.4,\"squawk\":\"7700\"}"
+        "]}";
+    auto out = parseNearest(json, 0.0, 0.0, 5);
+    TEST_ASSERT_EQUAL_UINT32(1, out.size());
+    TEST_ASSERT_FLOAT_WITHIN(0.1, 275.4, out[0].track);
+    TEST_ASSERT_EQUAL_INT(7700, out[0].squawk);
+    // Missing track/squawk -> defaults (NAN track, 0 squawk).
+    const char* json2 = "{\"ac\":[{\"flight\":\"X\",\"lat\":0.0,\"lon\":0.1}]}";
+    auto out2 = parseNearest(json2, 0.0, 0.0, 5);
+    TEST_ASSERT_TRUE(std::isnan(out2[0].track));
+    TEST_ASSERT_EQUAL_INT(0, out2[0].squawk);
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -444,5 +461,6 @@ int main(int, char **) {
     RUN_TEST(test_vector_end_cardinals);
     RUN_TEST(test_alt_band);
     RUN_TEST(test_is_emergency_squawk);
+    RUN_TEST(test_parse_nearest_track_squawk);
     return UNITY_END();
 }

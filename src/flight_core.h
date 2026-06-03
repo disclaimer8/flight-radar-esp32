@@ -1,6 +1,7 @@
 #pragma once
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <ArduinoJson.h>
 #include <vector>
 #include <string>
@@ -30,6 +31,8 @@ struct Aircraft {
     double altFt = NAN;    // alt_baro numeric; NAN if missing/ground
     bool   onGround = false;
     double gsKt = NAN;     // ground speed knots; NAN if missing
+    double track = NAN;    // true track degrees; NAN if missing
+    int    squawk = 0;     // transponder code (e.g. 7700); 0 if missing
     double lat = 0.0;
     double lon = 0.0;
     double distKm = 0.0;   // filled by parseNearest
@@ -54,6 +57,8 @@ inline std::vector<Aircraft> parseNearest(const std::string& json,
     filter["ac"][0]["t"] = true;
     filter["ac"][0]["alt_baro"] = true;
     filter["ac"][0]["gs"] = true;
+    filter["ac"][0]["track"] = true;
+    filter["ac"][0]["squawk"] = true;
     filter["ac"][0]["lat"] = true;
     filter["ac"][0]["lon"] = true;
 
@@ -72,6 +77,8 @@ inline std::vector<Aircraft> parseNearest(const std::string& json,
             ac.altFt = a["alt_baro"].as<double>();
         }
         if (a["gs"].is<double>()) ac.gsKt = a["gs"].as<double>();
+        if (a["track"].is<double>()) ac.track = a["track"].as<double>();
+        if (a["squawk"].is<const char*>()) ac.squawk = atoi(a["squawk"].as<const char*>());
         if (hideGround && ac.onGround) continue; // drop ground traffic before sort/cap
         ac.lat = a["lat"] | 0.0;
         ac.lon = a["lon"] | 0.0;
