@@ -35,14 +35,14 @@ class AircraftCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(children: [
-                    Text(cs, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    Flexible(child: Text(cs, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
                     const SizedBox(width: 8),
                     if (aircraft.isEmergency) _badge('EMG', Colors.red),
                     if (aircraft.isMilitary) _badge('MIL', Colors.green.shade700),
                   ]),
-                  Text('$subtitle$dist'),
-                  if (_hasRoute) Text('${aircraft.origin} → ${aircraft.dest}'),
-                  if (reg.isNotEmpty) Text(reg),
+                  Text('$subtitle$dist', maxLines: 1, overflow: TextOverflow.ellipsis),
+                  if (_hasRoute) Text('${aircraft.origin} → ${aircraft.dest}', maxLines: 1, overflow: TextOverflow.ellipsis),
+                  if (reg.isNotEmpty) Text(reg, maxLines: 1, overflow: TextOverflow.ellipsis),
                 ],
               ),
             ),
@@ -59,11 +59,32 @@ class AircraftCard extends StatelessWidget {
       );
 }
 
-class _PhotoBox extends StatelessWidget {
+class _PhotoBox extends StatefulWidget {
   final String reg;
   final String hex;
   final PhotoClient photos;
   const _PhotoBox({required this.reg, required this.hex, required this.photos});
+
+  @override
+  State<_PhotoBox> createState() => _PhotoBoxState();
+}
+
+class _PhotoBoxState extends State<_PhotoBox> {
+  late Future<PhotoRef?> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = widget.photos.lookup(reg: widget.reg, hex: widget.hex);
+  }
+
+  @override
+  void didUpdateWidget(_PhotoBox old) {
+    super.didUpdateWidget(old);
+    if (old.reg != widget.reg || old.hex != widget.hex) {
+      _future = widget.photos.lookup(reg: widget.reg, hex: widget.hex);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -71,7 +92,7 @@ class _PhotoBox extends StatelessWidget {
       width: 80,
       height: 60,
       child: FutureBuilder<PhotoRef?>(
-        future: photos.lookup(reg: reg, hex: hex),
+        future: _future,
         builder: (context, snap) {
           final photo = snap.data;
           if (photo == null) {
@@ -86,7 +107,7 @@ class _PhotoBox extends StatelessWidget {
             children: [
               Expanded(
                 child: Image.network(photo.thumbUrl, fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => Container(
+                    errorBuilder: (_, _, _) => Container(
                         color: Colors.black12,
                         child: const Icon(Icons.flight, color: Colors.black38))),
               ),
