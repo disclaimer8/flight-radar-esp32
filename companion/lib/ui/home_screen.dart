@@ -124,8 +124,10 @@ class _HomeScreenState extends State<HomeScreen> {
                         style: TextStyle(color: Colors.black54)))
                 : ListView.builder(
                     itemCount: _status.aircraft.length,
-                    itemBuilder: (context, i) =>
-                        AircraftCard(aircraft: _status.aircraft[i], photos: _photos),
+                    itemBuilder: (context, i) => AircraftCard(
+                        key: ValueKey(_status.aircraft[i].hex),
+                        aircraft: _status.aircraft[i],
+                        photos: _photos),
                   ),
           ),
         ],
