@@ -26,12 +26,12 @@ void main() {
     expect(noField.gsKt, isNull);
   });
 
-  test('parseAircraft caps to 15 nearest', () {
+  test('parseAircraft caps to 10 nearest', () {
     final acs = List.generate(20, (i) =>
         '{"flight":"F$i","t":"A320","lat":${48.0 + i * 0.1},"lon":11.0,"alt_baro":1000,"gs":300}');
     final body = '{"ac":[${acs.join(",")}]}';
     final list = parseAircraft(body, 48.0, 11.0);
-    expect(list.length, 15);
+    expect(list.length, 10);
     expect(list.first.callsign, 'F0'); // nearest
   });
 
