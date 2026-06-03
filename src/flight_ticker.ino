@@ -240,12 +240,13 @@ void drawRadar() {
         fb.drawString("NO LINK", CX, 236, 2);
     }
 
-    // Range readout (top-left): names the outer-ring distance / current zoom.
-    char rbuf[8];
+    // Range readout: names the outer-ring distance / current zoom. Top-center under
+    // the "N" (corner positions are off the round GC9A01's visible glass).
+    char rbuf[12];
     std::snprintf(rbuf, sizeof(rbuf), "%dkm", (int)dr);
-    fb.setTextDatum(TL_DATUM);
+    fb.setTextDatum(TC_DATUM);
     fb.setTextColor(TFT_DARKGREEN, TFT_BLACK);
-    fb.drawString(rbuf, 4, 4, 2);
+    fb.drawString(rbuf, CX, 22, 2);
 
     fb.pushSprite(0, 0);
 }
