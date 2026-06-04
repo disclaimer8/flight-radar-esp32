@@ -140,7 +140,9 @@ int photoDrawCb(JPEGDRAW* d) {
     for (int row = 0; row < d->iHeight; row++) {
         int ty = d->y + row - g_decOffY;
         if (ty < 0 || ty >= 240) continue;
-        for (int col = 0; col < d->iWidth; col++) {
+        // iWidth is the buffer stride; iWidthUsed excludes stale columns on
+        // right-edge MCU blocks (visible in the letterboxed case).
+        for (int col = 0; col < d->iWidthUsed; col++) {
             int tx = d->x + col - g_decOffX;
             if (tx < 0 || tx >= 240) continue;
             g_decTarget[ty * 240 + tx] = d->pPixels[row * d->iWidth + col];
