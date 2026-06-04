@@ -7,7 +7,9 @@ import '../data/photo_client.dart';
 class AircraftCard extends StatelessWidget {
   final Aircraft aircraft;
   final PhotoClient photos;
-  const AircraftCard({super.key, required this.aircraft, required this.photos});
+  final VoidCallback? onTap;
+  const AircraftCard(
+      {super.key, required this.aircraft, required this.photos, this.onTap});
 
   bool get _hasRoute =>
       (aircraft.origin ?? '').isNotEmpty &&
@@ -23,30 +25,33 @@ class AircraftCard extends StatelessWidget {
 
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      child: Padding(
-        padding: const EdgeInsets.all(8),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _PhotoBox(reg: reg, hex: aircraft.hex, photos: photos),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(children: [
-                    Flexible(child: Text(cs, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
-                    const SizedBox(width: 8),
-                    if (aircraft.isEmergency) _badge('EMG', Colors.red),
-                    if (aircraft.isMilitary) _badge('MIL', Colors.green.shade700),
-                  ]),
-                  Text('$subtitle$dist', maxLines: 1, overflow: TextOverflow.ellipsis),
-                  if (_hasRoute) Text('${aircraft.origin} → ${aircraft.dest}', maxLines: 1, overflow: TextOverflow.ellipsis),
-                  if (reg.isNotEmpty) Text(reg, maxLines: 1, overflow: TextOverflow.ellipsis),
-                ],
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _PhotoBox(reg: reg, hex: aircraft.hex, photos: photos),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      Flexible(child: Text(cs, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
+                      const SizedBox(width: 8),
+                      if (aircraft.isEmergency) _badge('EMG', Colors.red),
+                      if (aircraft.isMilitary) _badge('MIL', Colors.green.shade700),
+                    ]),
+                    Text('$subtitle$dist', maxLines: 1, overflow: TextOverflow.ellipsis),
+                    if (_hasRoute) Text('${aircraft.origin} → ${aircraft.dest}', maxLines: 1, overflow: TextOverflow.ellipsis),
+                    if (reg.isNotEmpty) Text(reg, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

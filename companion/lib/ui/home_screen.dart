@@ -11,6 +11,7 @@ import '../packet/wifi_scan_packet.dart';
 import '../service/gateway_controller.dart';
 import '../service/gateway_engine.dart' show GatewayStatus;
 import 'aircraft_card.dart';
+import 'aircraft_detail_sheet.dart';
 import 'network_picker.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -285,10 +286,16 @@ class _HomeScreenState extends State<HomeScreen> {
           else
             SliverList.builder(
               itemCount: _status.aircraft.length,
-              itemBuilder: (context, i) => AircraftCard(
-                  key: ValueKey(_status.aircraft[i].hex),
-                  aircraft: _status.aircraft[i],
-                  photos: _photos),
+              itemBuilder: (context, i) {
+                final a = _status.aircraft[i];
+                return AircraftCard(
+                  key: ValueKey(a.hex),
+                  aircraft: a,
+                  photos: _photos,
+                  onTap: () =>
+                      showAircraftDetail(context, a, _photos, _controller.status),
+                );
+              },
             ),
         ],
       ),
