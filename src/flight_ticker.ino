@@ -471,6 +471,15 @@ void drawDetail() {
     fb.pushSprite(0, 0);
 }
 
+// Blocking sections (photo fetch, message flash) accumulate touch-INT edges
+// from the same gesture (finger lift, CST816S event bursts); drain them so
+// stale events don't replay afterwards and instantly kick the view around.
+void drainTouch() {
+    g_touchEvent = false;
+    touch.readGesture();          // clears the chip's latched gesture too
+    g_lastTouch = millis();
+}
+
 // Centered one-liner shown for ~1.2 s (blocking — same one-shot acceptance as
 // the photo fetch itself), then the next frame redraws the current view.
 void flashPhotoMsg(const char* msg) {
@@ -488,7 +497,11 @@ void enterPhotoView() {
     if (g_cache.empty()) return;
     if (g_idx >= g_cache.size()) g_idx = 0;
     const Aircraft& ac = g_cache[g_idx];
-    if (WiFi.status() != WL_CONNECTED) { flashPhotoMsg("No Wi-Fi"); return; }
+    if (WiFi.status() != WL_CONNECTED) {
+        flashPhotoMsg("No Wi-Fi");
+        drainTouch();
+        return;
+    }
     fb.fillSprite(TFT_BLACK);
     fb.setTextDatum(MC_DATUM);
     fb.setTextColor(TFT_CYAN, TFT_BLACK);
@@ -499,8 +512,10 @@ void enterPhotoView() {
     if (!r.ok) {
         // TEMP bring-up diag: show the failing stage instead of a bare "No photo"
         flashPhotoMsg(g_photoDiag.empty() ? "No photo" : g_photoDiag.c_str());
+        drainTouch();
         return;
     }
+    drainTouch();   // the blocking fetch latched this swipe's lift events
     g_photoPx = r.px;
     g_photoCredit = r.photographer;
     g_view = PHOTO;
