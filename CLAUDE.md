@@ -41,7 +41,7 @@ Pure, host-testable core + thin Arduino layer:
 - `src/coord_core.h` — `parseLatLon` (captive-portal coordinate validation, host-tested)
 - `src/wifi_config_core.h` — `parseWifiConfig` (BLE Wi-Fi provisioning packet, host-tested)
 - `src/wifi_scan_core.h` — scan-request parser + scan-record encoder + `dedupSortCap` (host-tested; Dart mirror + `ScanCollector` in `companion/lib/packet/wifi_scan_packet.dart`)
-- `src/photo_core.h` — `parsePlanespottersPhoto` + `pickJpegScale` / `cropOffset`; 8-slot PSRAM LRU + per-boot negative cache; JPEGDEC streaming decode; host-tested
+- `src/photo_core.h` — `parsePlanespottersPhoto(json)` → `PsPhoto{ok,url,photographer}`; `pickJpegScale(srcW,srcH)` → divisor (240 px target hardcoded); `cropOffset(scaledDim)` → int (one axis); `PhotoResult` type; host-tested. PSRAM LRU cache, negative cache, JPEGDEC decode, HTTPS fetch live in `flight_ticker.ino` (not host-tested)
 - `src/flight_ticker.ino` — Wi-Fi/HTTP + NimBLE peripheral + TFT_eSPI sprite + radar/detail/photo state machine
 - `scripts/ble_send.py` — host BLE smoke-test sender (bleak), emits v3 packets
 - `companion/` — Flutter phone app (Android + iOS): BLE feeder (polls airplanes.live at the phone's GPS, feeds aircraft to the device when Wi-Fi is down) + live aircraft viewer (planespotters photos, route, EMG/MIL badges, emergency/military local notifications) + BLE Wi-Fi provisioning section (incl. scan-to-pick network via `f1a90004`) + aircraft detail sheet (OSM mini-map, full field grid, live updates)

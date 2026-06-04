@@ -91,7 +91,7 @@ host unit tests under the `native` environment — no hardware needed.
 | `src/coord_core.h` | `parseLatLon` — portal coordinate validation (host-tested) |
 | `src/wifi_config_core.h` | `parseWifiConfig` — BLE Wi-Fi provisioning packet (host-tested) |
 | `src/cst816s.h` | Minimal CST816S touch gesture driver |
-| `src/photo_core.h` | planespotters.net lookup (`parsePlanespottersPhoto`), JPEG scale picker (`pickJpegScale`), crop-offset math (`cropOffset`); PSRAM 8-slot LRU + negative cache (host-tested) |
+| `src/photo_core.h` | `parsePlanespottersPhoto` → `PsPhoto{ok,url,photographer}`, `pickJpegScale(srcW,srcH)` → divisor, `cropOffset(scaledDim)` → offset; also the shared `PhotoResult` type (host-tested) |
 | `src/flight_ticker.ino` | Wi-Fi/HTTP, NimBLE peripheral, TFT_eSPI sprite rendering, touch + radar/detail/photo state machine |
 
 `pio test -e native -f test_core` runs the unit tests (60 cases, including the

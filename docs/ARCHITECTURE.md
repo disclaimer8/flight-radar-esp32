@@ -87,30 +87,30 @@ request/record packet helpers, and photo_core helpers).
   `ok = false` on wrong magic/version, zero or oversized SSID length, oversized
   pass length, or a truncated buffer.
 
-### `src/photo_core.h` — aircraft photo pipeline (pure, Arduino-free, host-tested)
-- `parsePlanespottersPhoto(json)` → URL string — parses the planespotters.net
-  API response and returns the JPEG URL of the first result (empty string on
-  failure or empty result set). The lookup is done first by registration, then
-  by hex (`Aircraft.hex`) as fallback. A descriptive `User-Agent` header is
-  mandatory — the API returns HTTP 403 for generic or empty UAs.
-- `pickJpegScale(srcW, srcH, dstW, dstH)` → scale factor `{1, 2, 4, 8}` —
-  selects the largest JPEGDEC integer scale that still covers the target
-  rectangle on both axes (used to minimize decode memory without under-sampling).
-- `cropOffset(scaledW, scaledH, dstW, dstH)` → `(x, y)` pixel offset — centers
-  a scaled image into the target rectangle (any excess is cropped by the draw
-  loop).
-- **PSRAM LRU cache** — 8 slots, each holding a 240×240 RGB565 framebuffer
-  (~115 KB) allocated from PSRAM. Total footprint ≈ 920 KB of the 2 MB PSRAM
-  bank. Cache keys are registration strings (or hex when registration is absent).
-  A separate per-boot **negative cache** records hex addresses for which the API
-  returned no photos, suppressing redundant lookups within a session.
-- **Blocking acceptance.** The HTTP fetch + decode takes 1–3 s and runs on the
-  main thread inside `loop()`. This is intentional: the house pattern for this
-  firmware is to block on slow I/O rather than add an RTOS task (NimBLE
-  callbacks already run on a separate FreeRTOS task and use a flag handoff). The
-  photo view shows a loading indicator while the fetch is in progress.
-- **Wi-Fi only.** Photo fetch is skipped entirely when the device is in BLE
-  mode; the photo view displays a `"No Wi-Fi"` message instead.
+### `src/photo_core.h` — photo JSON parse + scale/crop math (pure, Arduino-free, host-tested)
+- `parsePlanespottersPhoto(json)` → `PsPhoto{ok, url, photographer}` — parses
+  the planespotters.net API response and returns a struct with the JPEG URL of
+  the first result and the photographer name required for attribution (`ok =
+  false` on failure or empty result set). A descriptive `User-Agent` header is
+  mandatory on the calling side — the API returns HTTP 403 for generic or empty
+  UAs.
+- `pickJpegScale(srcW, srcH)` → scale divisor `{1, 2, 4, 8}` — selects the
+  largest JPEGDEC integer divisor whose scaled image still covers the 240×240
+  target on both axes (used to minimise decode memory without under-sampling).
+  The 240 px target is hardcoded.
+- `cropOffset(scaledDim)` → `int` — centering offset for one scaled dimension
+  onto the 240 px target. Positive = crop that many source pixels off the
+  leading edge; negative = letterbox margin. Called once per axis.
+- `struct PhotoResult` — `{ok, px, photographer}` — the type returned by
+  `fetchPhoto()` (defined in `flight_ticker.ino`); declared here so the Arduino
+  preprocessor sees the type before the auto-forward-declaration it emits for
+  `fetchPhoto()`.
+
+The **PSRAM 8-slot LRU cache** (registration-or-hex keyed), **per-boot negative
+cache** (also keyed by registration-or-hex), **JPEGDEC streaming decode**, and
+**HTTPS fetch** all live in `flight_ticker.ino` and are **not** host-tested.
+The blocking 1–3 s fetch+decode runs on the main thread inside `loop()`;
+Wi-Fi-only mode suppresses the fetch entirely ("No Wi-Fi" shown).
 
 ### `src/ble_core.h` — BLE wire protocol + parser (pure, Arduino-free, host-tested)
 - `parseBlePacket(buf, len, maxN, hideGround)` → `BlePacket` — decodes one
@@ -410,12 +410,13 @@ harness.
   immediately if the list becomes empty. Swipe up (Wi-Fi only) enters PHOTO.
 - **PHOTO**: shows a planespotters.net photo for the current aircraft with a
   `(c) photographer / planespotters.net` attribution overlay. On entry,
-  `photo_core.h` is consulted: if the photo is already in the 8-slot PSRAM LRU
-  cache it displays instantly; otherwise a blocking HTTPS fetch + JPEGDEC decode
-  runs (1–3 s, loading indicator shown). Lookup is by registration first, then
-  hex (`Aircraft.hex`). Any touch returns to DETAIL; idle for 15 s returns
-  directly to RADAR. In BLE mode (no Wi-Fi) a `"No Wi-Fi"` message is shown
-  instead and swipe-up from DETAIL is suppressed.
+  `fetchPhoto()` (in `flight_ticker.ino`) is called: it checks the 8-slot PSRAM
+  LRU cache (keyed by registration, or hex when registration is absent) for an
+  instant hit; on a miss it runs a blocking HTTPS fetch + JPEGDEC decode (1–3 s,
+  loading indicator shown), using `parsePlanespottersPhoto` from `photo_core.h`
+  to extract the URL and photographer from the API JSON. Any touch returns to
+  DETAIL; idle for 15 s returns directly to RADAR. In BLE mode (no Wi-Fi) a
+  `"No Wi-Fi"` message is shown instead and swipe-up from DETAIL is suppressed.
 
 ## Configuration
 
