@@ -82,9 +82,9 @@ host unit tests under the `native` environment — no hardware needed.
 | `src/cst816s.h` | Minimal CST816S touch gesture driver |
 | `src/flight_ticker.ino` | Wi-Fi/HTTP, NimBLE peripheral, TFT_eSPI sprite rendering, touch + radar/detail state machine |
 
-`pio test -e native -f test_core` runs the unit tests (52 cases, including the
-BLE packet parser). The companion app has its own Flutter unit tests:
-`cd companion && flutter test`.
+`pio test -e native -f test_core` runs the unit tests (56 cases, including the
+BLE packet parser and Wi-Fi scan packet parser). The companion app has its own
+Flutter unit tests: `cd companion && flutter test` (53 cases).
 
 ## BLE fallback (optional)
 
@@ -95,9 +95,11 @@ re-centers on the packet's GPS and plots them. BLE data is used **only when
 Wi-Fi is down** and the last packet is still fresh (≤ `BLE_FRESHNESS_MS`,
 default 30 s); after that the screen shows **NO LINK**. The wire format
 (v3, header + up to 10 × 48-byte records) and GATT UUIDs are documented in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). There are **two** GATT
-characteristics: `f1a90002` (aircraft ingest, WRITE) and `f1a90003` (Wi-Fi
-config, WRITE + NOTIFY — used by the BLE provisioning path above).
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). There are **three** GATT
+characteristics: `f1a90002` (aircraft ingest, WRITE), `f1a90003` (Wi-Fi
+config, WRITE + NOTIFY — used by the BLE provisioning path above), and
+`f1a90004` (Wi-Fi network scan, WRITE + NOTIFY — app writes a scan request,
+device scans asynchronously and notifies one record per discovered network).
 
 > **Phone companion app** — `companion/` is a Flutter app (Android **and** iOS,
 > hardware-verified). It is both a **viewer** and a feeder: its home screen shows
@@ -106,7 +108,14 @@ config, WRITE + NOTIFY — used by the BLE provisioning path above).
 > notification** when an emergency-squawk or military aircraft appears (works in
 > the background). When Wi-Fi is down it also feeds aircraft to the device over
 > BLE (the production sender for this fallback). It can also provision the
-> device's Wi-Fi credentials over BLE from its "Configure device Wi-Fi" section.
+> device's Wi-Fi credentials over BLE from its "Configure device Wi-Fi" section
+> — including a **scan-to-pick** flow: tap the Wi-Fi scan button next to the SSID
+> field, the device scans and streams nearby networks back over BLE, and a picker
+> sheet lets you tap one to fill the SSID automatically. Tap any aircraft card to
+> open a **live detail sheet** with a full field grid (altitude, speed, track,
+> squawk, route, distance, registration, ICAO24, position, on-ground), an OSM
+> mini-map with a track-rotated aircraft marker and observer dot, EMG/MIL badges,
+> and a "Signal lost" banner that retains the last known data.
 > `scripts/ble_send.py` remains a laptop smoke-test harness.
 > See [companion/README.md](companion/README.md).
 

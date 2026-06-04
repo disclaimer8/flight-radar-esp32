@@ -42,4 +42,20 @@ void main() {
     expect(find.text('MIL'), findsOneWidget);
     expect(find.textContaining('→'), findsNothing);
   });
+
+  testWidgets('card invokes onTap', (tester) async {
+    final photos = PhotoClient(MockClient((_) async => http.Response('{"photos":[]}', 200)));
+    const a = Aircraft(
+      callsign: 'TST123', type: 'B738', lat: 51.5, lon: -0.45,
+      altFt: 30000, gsKt: 400, onGround: false,
+    );
+    var tapped = false;
+    await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+            body: AircraftCard(
+                aircraft: a, photos: photos, onTap: () => tapped = true))));
+    await tester.pump();
+    await tester.tap(find.byType(AircraftCard));
+    expect(tapped, isTrue);
+  });
 }

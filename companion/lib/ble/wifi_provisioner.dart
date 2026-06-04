@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import '../packet/wifi_config_packet.dart';
+import 'device_finder.dart';
 
 enum ProvPhase { idle, connecting, sending, applying, connected, failed }
 
@@ -27,7 +28,7 @@ class WifiProvisioner {
     final done = Completer<void>();
     try {
       _emit(const ProvState(ProvPhase.connecting));
-      device = await _scanForDevice();
+      device = await findRadarDevice();
       if (device == null) {
         _emit(const ProvState(ProvPhase.failed, 'device not found'));
         return;
@@ -73,24 +74,6 @@ class WifiProvisioner {
       await notifySub?.cancel();
       try { await device?.disconnect(); } catch (_) {}
     }
-  }
-
-  Future<BluetoothDevice?> _scanForDevice() async {
-    final on = await FlutterBluePlus.adapterState
-        .where((s) => s == BluetoothAdapterState.on)
-        .first
-        .timeout(const Duration(seconds: 5), onTimeout: () => BluetoothAdapterState.off);
-    if (on != BluetoothAdapterState.on) return null;
-    final completer = Completer<BluetoothDevice?>();
-    final sub = FlutterBluePlus.onScanResults.listen((results) {
-      if (results.isNotEmpty && !completer.isCompleted) completer.complete(results.first.device);
-    });
-    await FlutterBluePlus.startScan(withServices: [serviceUuid], timeout: const Duration(seconds: 15));
-    final device = await completer.future
-        .timeout(const Duration(seconds: 16), onTimeout: () => null);
-    await sub.cancel();
-    await FlutterBluePlus.stopScan();
-    return device;
   }
 
   void _emit(ProvState s) {

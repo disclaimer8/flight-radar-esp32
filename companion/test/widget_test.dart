@@ -9,6 +9,11 @@ void main() {
     expect(find.text('Start feeding device'), findsOneWidget);
   });
 
+  testWidgets('wifi section has a scan-networks button', (tester) async {
+    await tester.pumpWidget(const CompanionApp());
+    expect(find.byIcon(Icons.wifi_find), findsOneWidget);
+  });
+
   testWidgets('home screen does not overflow in landscape', (tester) async {
     // iPhone 13/14-class landscape viewport; a RenderFlex overflow during
     // layout surfaces as a test failure.

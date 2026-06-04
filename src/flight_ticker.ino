@@ -10,6 +10,7 @@
 #include "render_core.h"
 #include "coord_core.h"
 #include "wifi_config_core.h"
+#include "wifi_scan_core.h"
 #include "cst816s.h"
 #include <NimBLEDevice.h>
 #include "ble_core.h"
@@ -65,6 +66,7 @@ static const char* BLE_DEVICE_NAME  = "FlightRadar";
 static const char* BLE_SERVICE_UUID = "f1a90001-7e1d-4c2a-9b3f-1a2b3c4d5e6f";
 static const char* BLE_CHAR_UUID    = "f1a90002-7e1d-4c2a-9b3f-1a2b3c4d5e6f";
 static const char* BLE_WIFICFG_UUID = "f1a90003-7e1d-4c2a-9b3f-1a2b3c4d5e6f";
+static const char* BLE_WIFISCAN_UUID = "f1a90004-7e1d-4c2a-9b3f-1a2b3c4d5e6f";
 
 static uint8_t  g_bleBuf[BLE_MAX_PACKET];
 volatile size_t g_bleLen = 0;
@@ -96,6 +98,20 @@ class WifiConfigCallbacks : public NimBLECharacteristicCallbacks {
         std::memcpy(g_wifiCfgBuf, v.data(), n);
         g_wifiCfgLen = n;
         g_wifiCfgReady = true;
+    }
+};
+
+NimBLECharacteristic* g_wifiScanChar = nullptr;
+volatile bool g_wifiScanRequested = false;
+bool g_wifiScanInFlight = false;   // loop()-only; not shared with BLE task
+
+// Scan-request write: like the other callbacks, only set a flag; loop() runs
+// the (async) scan and notifies results off the BLE task.
+class WifiScanCallbacks : public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic* c) override {
+        std::string v = c->getValue();
+        if (isScanRequest(reinterpret_cast<const uint8_t*>(v.data()), v.size()))
+            g_wifiScanRequested = true;
     }
 };
 
@@ -458,6 +474,28 @@ void notifyWifiStatus(uint8_t code, const String& detail) {
     g_wifiCfgChar->notify();
 }
 
+// Send scan results to the app: one notify per network (each fits any MTU),
+// or a single total=0 notify when nothing was found / the scan failed.
+// Blocks loop() ~20 ms per network (≤300 ms total) — a deliberate one-shot
+// action, far below the accepted poll (~8 s) / provisioning (~12 s) blocks.
+void sendScanResults(const std::vector<ScanNet>& nets) {
+    if (!g_wifiScanChar) return;
+    uint8_t buf[WIFISCAN_REC_MAX];
+    if (nets.empty()) {
+        g_wifiScanChar->setValue(buf, encodeScanEmpty(buf));
+        g_wifiScanChar->notify();
+        return;
+    }
+    uint8_t total = static_cast<uint8_t>(nets.size());
+    for (uint8_t i = 0; i < total; i++) {
+        size_t len = encodeScanRecord(buf, total, i, nets[i]);
+        if (!len) continue;
+        g_wifiScanChar->setValue(buf, len);
+        g_wifiScanChar->notify();
+        delay(20);   // pace notifies so the central's queue keeps up
+    }
+}
+
 // Apply a received Wi-Fi provisioning packet: parse, join, persist, report.
 // Bounded blocking wait (~12s) is acceptable for a deliberate one-shot action.
 void applyWifiConfig() {
@@ -515,6 +553,10 @@ void setup() {
         BLE_WIFICFG_UUID,
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY);
     g_wifiCfgChar->setCallbacks(new WifiConfigCallbacks());
+    g_wifiScanChar = bleSvc->createCharacteristic(
+        BLE_WIFISCAN_UUID,
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY);
+    g_wifiScanChar->setCallbacks(new WifiScanCallbacks());
     bleSvc->start();
     NimBLEAdvertising* bleAdv = NimBLEDevice::getAdvertising();
     bleAdv->addServiceUUID(BLE_SERVICE_UUID);
@@ -547,6 +589,34 @@ void loop() {
     if (g_wifiCfgReady) {
         g_wifiCfgReady = false;
         applyWifiConfig();
+    }
+    if (g_wifiScanRequested && !g_wifiScanInFlight) {
+        g_wifiScanRequested = false;
+        // Single-radio caveat: scanning while STA is connected goes off-channel,
+        // which can briefly stall an in-flight HTTPS poll (auto-reconnect recovers).
+        WiFi.scanNetworks(/*async=*/true);   // blocking scan would freeze the radar 2-3 s
+        g_wifiScanInFlight = true;
+    }
+    if (g_wifiScanInFlight) {
+        int n = WiFi.scanComplete();
+        if (n >= 0) {
+            std::vector<ScanNet> nets;
+            for (int i = 0; i < n; i++) {
+                ScanNet s;
+                s.ssid = std::string(WiFi.SSID(i).c_str());
+                int rssi = WiFi.RSSI(i);
+                s.rssi = static_cast<int8_t>(rssi < -128 ? -128 : (rssi > 127 ? 127 : rssi));
+                s.secured = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
+                nets.push_back(s);
+            }
+            WiFi.scanDelete();
+            sendScanResults(dedupSortCap(nets));
+            g_wifiScanInFlight = false;
+        } else if (n == WIFI_SCAN_FAILED) {
+            sendScanResults({});
+            g_wifiScanInFlight = false;
+        }
+        // n == WIFI_SCAN_RUNNING (-1): keep waiting
     }
     // pollApi() blocks up to ~8s (HTTP timeout); the sweep freezes and touches are
     // ignored for that window. Acceptable on this single-threaded firmware — not a bug.

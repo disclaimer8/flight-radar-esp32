@@ -21,8 +21,8 @@ Integrated board — no wiring; flash over USB-C.
 ## Toolchain (macOS): PlatformIO
 
 `brew install platformio`. Everything from the terminal, no Arduino IDE.
-- Tests (host, no hardware): `pio test -e native -f test_core` (52 cases)
-- Companion app tests: `cd companion && flutter test` (39 cases)
+- Tests (host, no hardware): `pio test -e native -f test_core` (56 cases)
+- Companion app tests: `cd companion && flutter test` (53 cases)
 - Build: `pio run -e esp32-s3`
 - Flash: `pio run -e esp32-s3 -t upload` (native USB auto-resets; no BOOT hold)
 - BLE smoke test: `pip install bleak; python3 scripts/ble_send.py` → sends one
@@ -38,9 +38,10 @@ Pure, host-testable core + thin Arduino layer:
 - `src/ble_core.h` — BLE wire protocol (v3) + `parseBlePacket` (Arduino-free, tested)
 - `src/coord_core.h` — `parseLatLon` (captive-portal coordinate validation, host-tested)
 - `src/wifi_config_core.h` — `parseWifiConfig` (BLE Wi-Fi provisioning packet, host-tested)
+- `src/wifi_scan_core.h` — scan-request parser + scan-record encoder + `dedupSortCap` (host-tested; Dart mirror + `ScanCollector` in `companion/lib/packet/wifi_scan_packet.dart`)
 - `src/flight_ticker.ino` — Wi-Fi/HTTP + NimBLE peripheral + TFT_eSPI sprite + radar/detail state machine
 - `scripts/ble_send.py` — host BLE smoke-test sender (bleak), emits v3 packets
-- `companion/` — Flutter phone app (Android + iOS): BLE feeder (polls airplanes.live at the phone's GPS, feeds aircraft to the device when Wi-Fi is down) + live aircraft viewer (planespotters photos, route, EMG/MIL badges, emergency/military local notifications) + BLE Wi-Fi provisioning section
+- `companion/` — Flutter phone app (Android + iOS): BLE feeder (polls airplanes.live at the phone's GPS, feeds aircraft to the device when Wi-Fi is down) + live aircraft viewer (planespotters photos, route, EMG/MIL badges, emergency/military local notifications) + BLE Wi-Fi provisioning section (incl. scan-to-pick network via `f1a90004`) + aircraft detail sheet (OSM mini-map, full field grid, live updates)
 
 Config + secrets in `src/config.h` (copy from `config.example.h`; gitignored).
 
@@ -61,6 +62,12 @@ Config + secrets in `src/config.h` (copy from `config.example.h`; gitignored).
 - A **second GATT characteristic** (`f1a90003`, WRITE+NOTIFY) lets the companion app
   provision Wi-Fi credentials over BLE, using the `parseWifiConfig` wire format in
   `src/wifi_config_core.h`.
+- A **third GATT characteristic** (`f1a90004`, WRITE+NOTIFY) handles the Wi-Fi network
+  scan flow: app writes a 3-byte `"WS"` request; write callback only sets a flag;
+  `loop()` calls `WiFi.scanNetworks` (async, avoids racing the NimBLE task) and
+  notifies one `"WN"` record per network (deduped by SSID, sorted by RSSI desc, cap 15,
+  hidden SSIDs dropped). Single-radio caveat: scanning briefly stalls the HTTPS poll.
+  See `src/wifi_scan_core.h`.
 - Range presets (25/50/100 km) are stored in NVS (`rangeIdx`); swipe up/down zooms,
   long-press reopens the captive portal. Out-of-range traffic appears as rim dots.
 - BLE is fallback-only: used when Wi-Fi is down AND last packet ≤ `BLE_FRESHNESS_MS`

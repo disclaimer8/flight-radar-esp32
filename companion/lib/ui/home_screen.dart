@@ -5,10 +5,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../ble/wifi_provisioner.dart';
+import '../ble/wifi_scanner.dart';
 import '../data/photo_client.dart';
+import '../packet/wifi_scan_packet.dart';
 import '../service/gateway_controller.dart';
 import '../service/gateway_engine.dart' show GatewayStatus;
 import 'aircraft_card.dart';
+import 'aircraft_detail_sheet.dart';
+import 'network_picker.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -26,6 +30,8 @@ class _HomeScreenState extends State<HomeScreen> {
   final _provisioner = WifiProvisioner();
   String _provStatus = '';
   bool _provisioning = false;
+  bool _scanning = false;
+  final _passFocus = FocusNode();
   StreamSubscription<GatewayStatus>? _sub;
 
   @override
@@ -85,6 +91,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _toggle() async {
+    // Single-central peripheral: never start the feeder while a scan or
+    // provisioning BLE session holds the device.
+    if (_provisioning || _scanning) return;
     if (_running) {
       await _controller.stop();
       setState(() => _running = false);
@@ -104,7 +113,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _sendWifi() async {
-    if (_ssidCtrl.text.isEmpty || _provisioning) return;
+    // _scanning guard: scan and provisioning are separate BLE sessions racing
+    // for the same single-central peripheral — never run both.
+    if (_ssidCtrl.text.isEmpty || _running || _provisioning || _scanning) return;
     if (!await _requestBlePermissions()) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -135,10 +146,42 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _scanWifi() async {
+    if (_running || _provisioning || _scanning) return;
+    if (!await _requestBlePermissions()) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Bluetooth permission is required to scan'),
+        ));
+      }
+      return;
+    }
+    setState(() { _scanning = true; _provStatus = 'Scanning networks…'; });
+    try {
+      final nets = await WifiScanner().scan();
+      if (!mounted) return;
+      setState(() => _provStatus = nets.isEmpty ? 'No networks found' : '');
+      if (nets.isEmpty) return;
+      final picked = await showModalBottomSheet<WifiNetwork>(
+        context: context,
+        builder: (_) => NetworkPicker(networks: nets),
+      );
+      if (picked != null && mounted) {
+        _ssidCtrl.text = picked.ssid;
+        _passFocus.requestFocus();
+      }
+    } on WifiScanException catch (e) {
+      if (mounted) setState(() => _provStatus = 'Scan failed: $e');
+    } finally {
+      if (mounted) setState(() => _scanning = false);
+    }
+  }
+
   @override
   void dispose() {
     _ssidCtrl.dispose();
     _passCtrl.dispose();
+    _passFocus.dispose();
     _provisioner.dispose();
     _sub?.cancel();
     _controller.dispose();
@@ -167,7 +210,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton(
-                      onPressed: _toggle,
+                      onPressed: (_provisioning || _scanning) ? null : _toggle,
                       child: Text(_running ? 'Stop' : 'Start feeding device'),
                     ),
                   ),
@@ -184,12 +227,30 @@ class _HomeScreenState extends State<HomeScreen> {
                 children: [
                   const Text('Configure device Wi-Fi',
                       style: TextStyle(fontWeight: FontWeight.bold)),
-                  TextField(
-                    controller: _ssidCtrl,
-                    decoration: const InputDecoration(labelText: 'SSID'),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _ssidCtrl,
+                          decoration: const InputDecoration(labelText: 'SSID'),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Scan networks via device',
+                        onPressed:
+                            (_running || _provisioning || _scanning) ? null : _scanWifi,
+                        icon: _scanning
+                            ? const SizedBox(
+                                width: 20, height: 20,
+                                child: CircularProgressIndicator(strokeWidth: 2))
+                            : const Icon(Icons.wifi_find),
+                      ),
+                    ],
                   ),
                   TextField(
                     controller: _passCtrl,
+                    focusNode: _passFocus,
                     obscureText: true,
                     decoration: const InputDecoration(labelText: 'Password'),
                   ),
@@ -197,7 +258,9 @@ class _HomeScreenState extends State<HomeScreen> {
                   Row(
                     children: [
                       FilledButton(
-                        onPressed: (_running || _provisioning) ? null : _sendWifi,
+                        onPressed: (_running || _provisioning || _scanning)
+                            ? null
+                            : _sendWifi,
                         child: const Text('Send to device'),
                       ),
                       const SizedBox(width: 12),
@@ -226,10 +289,16 @@ class _HomeScreenState extends State<HomeScreen> {
           else
             SliverList.builder(
               itemCount: _status.aircraft.length,
-              itemBuilder: (context, i) => AircraftCard(
-                  key: ValueKey(_status.aircraft[i].hex),
-                  aircraft: _status.aircraft[i],
-                  photos: _photos),
+              itemBuilder: (context, i) {
+                final a = _status.aircraft[i];
+                return AircraftCard(
+                  key: ValueKey(a.hex),
+                  aircraft: a,
+                  photos: _photos,
+                  onTap: () =>
+                      showAircraftDetail(context, a, _photos, _controller.status),
+                );
+              },
             ),
         ],
       ),
