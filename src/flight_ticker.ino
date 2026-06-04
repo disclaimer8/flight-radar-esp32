@@ -476,6 +476,8 @@ void notifyWifiStatus(uint8_t code, const String& detail) {
 
 // Send scan results to the app: one notify per network (each fits any MTU),
 // or a single total=0 notify when nothing was found / the scan failed.
+// Blocks loop() ~20 ms per network (≤300 ms total) — a deliberate one-shot
+// action, far below the accepted poll (~8 s) / provisioning (~12 s) blocks.
 void sendScanResults(const std::vector<ScanNet>& nets) {
     if (!g_wifiScanChar) return;
     uint8_t buf[WIFISCAN_REC_MAX];
@@ -590,6 +592,8 @@ void loop() {
     }
     if (g_wifiScanRequested && !g_wifiScanInFlight) {
         g_wifiScanRequested = false;
+        // Single-radio caveat: scanning while STA is connected goes off-channel,
+        // which can briefly stall an in-flight HTTPS poll (auto-reconnect recovers).
         WiFi.scanNetworks(/*async=*/true);   // blocking scan would freeze the radar 2-3 s
         g_wifiScanInFlight = true;
     }
