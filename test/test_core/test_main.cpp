@@ -3,6 +3,7 @@
 #include "../../src/render_core.h"
 #include "../../src/coord_core.h"
 #include "../../src/wifi_config_core.h"
+#include "../../src/wifi_scan_core.h"
 #include "../../src/ble_core.h"
 #include <cstring>
 
@@ -554,6 +555,67 @@ void test_parse_wifi_config(void) {
     TEST_ASSERT_FALSE(parseWifiConfig(truncpass, sizeof(truncpass)).ok);
 }
 
+void test_wifi_scan_request_parse() {
+    uint8_t ok[] = {0x57, 0x53, 0x01};
+    TEST_ASSERT_TRUE(isScanRequest(ok, 3));
+    uint8_t okTrail[] = {0x57, 0x53, 0x01, 0xFF};   // trailing bytes tolerated
+    TEST_ASSERT_TRUE(isScanRequest(okTrail, 4));
+    uint8_t badMagic[] = {0x57, 0x43, 0x01};        // "WC" = wifi-config, not scan
+    TEST_ASSERT_FALSE(isScanRequest(badMagic, 3));
+    uint8_t badVer[] = {0x57, 0x53, 0x02};
+    TEST_ASSERT_FALSE(isScanRequest(badVer, 3));
+    TEST_ASSERT_FALSE(isScanRequest(ok, 2));        // truncated
+    TEST_ASSERT_FALSE(isScanRequest(nullptr, 3));
+}
+
+void test_wifi_scan_record_encode() {
+    uint8_t buf[WIFISCAN_REC_MAX];
+    ScanNet n{"HomeNet", -62, true};
+    size_t len = encodeScanRecord(buf, 3, 1, n);
+    TEST_ASSERT_EQUAL(8 + 7, len);
+    TEST_ASSERT_EQUAL_HEX8(0x57, buf[0]);                    // 'W'
+    TEST_ASSERT_EQUAL_HEX8(0x4E, buf[1]);                    // 'N'
+    TEST_ASSERT_EQUAL_HEX8(1, buf[2]);                       // version
+    TEST_ASSERT_EQUAL_HEX8(3, buf[3]);                       // total
+    TEST_ASSERT_EQUAL_HEX8(1, buf[4]);                       // index
+    TEST_ASSERT_EQUAL_HEX8((uint8_t)(int8_t)-62, buf[5]);    // rssi as int8
+    TEST_ASSERT_EQUAL_HEX8(1, buf[6]);                       // secured
+    TEST_ASSERT_EQUAL_HEX8(7, buf[7]);                       // ssidLen
+    TEST_ASSERT_EQUAL_MEMORY("HomeNet", buf + 8, 7);
+
+    ScanNet maxSsid{std::string(32, 'a'), -50, false};
+    TEST_ASSERT_EQUAL(40, encodeScanRecord(buf, 1, 0, maxSsid));
+    ScanNet tooBig{std::string(33, 'a'), -50, false};
+    TEST_ASSERT_EQUAL(0, encodeScanRecord(buf, 1, 0, tooBig));
+    ScanNet empty{"", -50, false};
+    TEST_ASSERT_EQUAL(0, encodeScanRecord(buf, 1, 0, empty));
+}
+
+void test_wifi_scan_empty_encode() {
+    uint8_t buf[8];
+    TEST_ASSERT_EQUAL(4, encodeScanEmpty(buf));
+    TEST_ASSERT_EQUAL_HEX8(0x57, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x4E, buf[1]);
+    TEST_ASSERT_EQUAL_HEX8(1, buf[2]);
+    TEST_ASSERT_EQUAL_HEX8(0, buf[3]);   // total=0 → none found
+}
+
+void test_wifi_scan_dedup_sort_cap() {
+    std::vector<ScanNet> in = {
+        {"B", -80, true}, {"A", -60, false}, {"B", -50, true}, {"", -10, false},
+    };
+    auto out = dedupSortCap(in);
+    TEST_ASSERT_EQUAL(2, out.size());
+    TEST_ASSERT_EQUAL_STRING("B", out[0].ssid.c_str());  // strongest duplicate kept
+    TEST_ASSERT_EQUAL(-50, out[0].rssi);
+    TEST_ASSERT_EQUAL_STRING("A", out[1].ssid.c_str());  // sorted by RSSI desc
+
+    std::vector<ScanNet> many;
+    for (int i = 0; i < 20; i++)
+        many.push_back({"n" + std::to_string(i), (int8_t)(-30 - i), false});
+    TEST_ASSERT_EQUAL(15, dedupSortCap(many).size());    // capped
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -611,5 +673,9 @@ int main(int, char **) {
     RUN_TEST(test_query_radius_nm);
     RUN_TEST(test_parse_lat_lon);
     RUN_TEST(test_parse_wifi_config);
+    RUN_TEST(test_wifi_scan_request_parse);
+    RUN_TEST(test_wifi_scan_record_encode);
+    RUN_TEST(test_wifi_scan_empty_encode);
+    RUN_TEST(test_wifi_scan_dedup_sort_cap);
     return UNITY_END();
 }
