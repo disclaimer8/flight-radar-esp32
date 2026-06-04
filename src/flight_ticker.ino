@@ -149,6 +149,10 @@ uint8_t* g_photoDlBuf = nullptr;   // lazily allocated once, never freed
 // netTask calls it on core 0 (its private cache); loop() must never call it.
 std::pair<std::string, std::string> lookupRoute(const std::string& callsign);
 
+// Forward declaration: fetchPhoto is defined after the photo pipeline globals.
+// netTask calls it on core 0 (its private cache); loop() must never call it.
+PhotoResult fetchPhoto(const Aircraft& ac);
+
 // ---- netTask: all outbound HTTP on core 0 (render loop stays on core 1) ----
 // Hand-off = the house volatile-flag pattern: netTask is the only writer of
 // each result buffer, sets the ready flag LAST; loop() consumes at one safe
@@ -166,6 +170,19 @@ volatile bool g_routeReq = false;      // loop sets, netTask clears
 char          g_routeResKey[12] = "";  // written LAST by netTask
 char          g_routeResOrigin[8] = "";
 char          g_routeResDest[8] = "";
+
+// Photo channel: loop posts reg/hex, netTask runs the fetch/decode pipeline
+// (its private cache) and publishes the cache-owned pixel pointer + credit.
+char          g_photoReqReg[12] = "";
+char          g_photoReqHex[8] = "";
+volatile bool g_photoReq = false;      // loop sets, netTask clears
+uint16_t*     g_photoResPx = nullptr;
+char          g_photoResCredit[48] = "";
+volatile bool g_photoResOk = false;
+volatile bool g_photoReady = false;    // written LAST by netTask
+
+bool          g_photoLoading = false;          // PHOTO view: request in flight
+unsigned long g_photoMsgUntil = 0;             // non-blocking "No photo" deadline
 
 void netPoll() {
     // Persistent keep-alive client: handshake once (~1.5 s), then each poll
@@ -228,6 +245,17 @@ void netTask(void*) {
             strlcpy(g_routeResDest, rt.second.c_str(), sizeof(g_routeResDest));
             strlcpy(g_routeResKey, key, sizeof(g_routeResKey));   // key last = result complete
             g_routeReq = false;
+        }
+        if (g_photoReq) {
+            Aircraft ac;
+            ac.registration = (const char*)g_photoReqReg;
+            ac.hex          = (const char*)g_photoReqHex;
+            PhotoResult r = fetchPhoto(ac);    // netTask-private cache/decoder
+            g_photoResPx = r.px;
+            strlcpy(g_photoResCredit, r.photographer.c_str(), sizeof(g_photoResCredit));
+            g_photoResOk = r.ok;
+            g_photoReady = true;               // flag last
+            g_photoReq = false;
         }
         vTaskDelay(pdMS_TO_TICKS(50));
     }
@@ -570,8 +598,9 @@ void flashPhotoMsg(const char* msg) {
     delay(1200);
 }
 
-// Swipe-up handler in DETAIL: fetch (or cache-hit) the photo and switch view.
-// Failure paths flash a message and stay in DETAIL.
+// Swipe-up handler in DETAIL: post a photo request to netTask and switch view.
+// The "No Wi-Fi" path still blocks 1.2 s (flashPhotoMsg) and drains touch;
+// the success path is non-blocking — netTask does the fetch while loop() renders.
 void enterPhotoView() {
     if (g_cache.empty()) return;
     if (g_idx >= g_cache.size()) g_idx = 0;
@@ -581,25 +610,39 @@ void enterPhotoView() {
         drainTouch();
         return;
     }
-    fb.fillSprite(TFT_BLACK);
-    fb.setTextDatum(MC_DATUM);
-    fb.setTextColor(TFT_CYAN, TFT_BLACK);
-    fb.drawString("Loading photo...", CX, CY, 2);
-    fb.pushSprite(0, 0);
-    PhotoResult r = fetchPhoto(ac);
-    if (!r.ok) {
-        flashPhotoMsg("No photo");
-        drainTouch();
-        return;
-    }
-    drainTouch();   // the blocking fetch latched this swipe's lift events
-    g_photoPx = r.px;
-    g_photoCredit = r.photographer;
+    strlcpy(g_photoReqReg, ac.registration.c_str(), sizeof(g_photoReqReg));
+    strlcpy(g_photoReqHex, ac.hex.c_str(), sizeof(g_photoReqHex));
+    g_photoReq = true;
+    g_photoLoading = true;
+    g_photoPx = nullptr;
+    g_photoMsgUntil = 0;
     g_view = PHOTO;
 }
 
 void drawPhoto() {
-    if (!g_photoPx) { g_view = DETAIL; drawDetail(); return; }
+    if (!g_photoPx) {
+        if (g_photoMsgUntil != 0) {                 // failed: flash then return
+            if (millis() >= g_photoMsgUntil) {
+                g_photoMsgUntil = 0;
+                g_view = DETAIL; drawDetail(); return;
+            }
+            fb.fillSprite(TFT_BLACK);
+            fb.setTextDatum(MC_DATUM);
+            fb.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+            fb.drawString("No photo", CX, CY, 2);
+            fb.pushSprite(0, 0);
+            return;
+        }
+        if (g_photoLoading) {                       // request in flight
+            fb.fillSprite(TFT_BLACK);
+            fb.setTextDatum(MC_DATUM);
+            fb.setTextColor(TFT_CYAN, TFT_BLACK);
+            fb.drawString("Loading photo...", CX, CY, 2);
+            fb.pushSprite(0, 0);
+            return;
+        }
+        g_view = DETAIL; drawDetail(); return;      // shouldn't happen; safe out
+    }
     // JPEGDEC emits little-endian RGB565; pushImage wants swapped bytes.
     // (If hardware smoke shows red/blue swapped, flip this to false.)
     fb.setSwapBytes(true);
@@ -660,6 +703,8 @@ void handleTouch() {
     } else { // PHOTO: any touch returns to the detail page
         g_view = DETAIL;
         g_photoPx = nullptr;   // cache still owns the pixels
+        g_photoLoading = false;   // a late netTask result will be discarded
+        g_photoMsgUntil = 0;
     }
 }
 
@@ -697,6 +742,11 @@ void sendScanResults(const std::vector<ScanNet>& nets) {
     }
 }
 
+// netTask-PRIVATE from here on: loop() must never call fetchPhoto, httpsGetToBuf,
+// or read g_photoCache, g_photoMiss, g_jpeg, g_photoDlBuf (photo pipeline is
+// owned by netTask on core 0; cross-core access is UB for the map + data race
+// for the PSRAM buffers).
+
 // Download a URL into a caller-supplied buffer. Same TLS pattern as the hexdb
 // lookup; requires Content-Length (planespotters sends it) and caps at maxLen.
 // Writes into buf (must be at least maxLen bytes) and sets *outLen on success.
@@ -725,6 +775,10 @@ bool httpsGetToBuf(const char* url, uint8_t* buf, size_t maxLen, size_t* outLen)
 // LRU-insert a decoded photo. Eviction can never free the on-screen photo:
 // fetches only happen on PHOTO entry, and the entering photo gets the
 // freshest lastUse.
+//
+// Eviction invariant: inserts/evictions happen only while a request is
+// outstanding; while a request is outstanding the loop displays "Loading"
+// (g_photoPx == nullptr); therefore eviction can never free a displayed photo.
 void photoCacheInsert(const std::string& key, uint16_t* px, const std::string& photographer) {
     PhotoSlot* slot = nullptr;
     for (auto& s : g_photoCache) if (!s.px) { slot = &s; break; }
@@ -921,6 +975,19 @@ void loop() {
         g_stale = false;
         g_lastPoll = millis();         // freshness = when applied
     }
+    if (g_photoReady) {
+        g_photoReady = false;
+        if (g_view == PHOTO && g_photoLoading) {
+            g_photoLoading = false;
+            if (g_photoResOk) {
+                g_photoPx = g_photoResPx;
+                g_photoCredit = (const char*)g_photoResCredit;
+            } else {
+                g_photoMsgUntil = millis() + 1500;   // "No photo", then back
+            }
+        }
+        // else: user already left PHOTO — discard the late result.
+    }
     if (g_wifiCfgReady) {
         g_wifiCfgReady = false;
         applyWifiConfig();
@@ -970,6 +1037,8 @@ void loop() {
     if (g_view != RADAR && millis() - g_lastTouch >= IDLE_RETURN_MS) {
         g_view = RADAR;
         g_photoPx = nullptr;
+        g_photoLoading = false;   // a late netTask result will be discarded
+        g_photoMsgUntil = 0;
     }
 
     // Backlight: dim after a minute of no touches, restore instantly on touch.
