@@ -129,6 +129,9 @@ struct PhotoSlot {
     unsigned long lastUse = 0;
 };
 static const int PHOTO_CACHE_SLOTS = 8;
+// planespotters 403s generic UAs — must be descriptive with a contact URL.
+static const char* PHOTO_UA =
+    "flight-radar-esp32/1.0 (+https://github.com/disclaimer8/flight-radar-esp32)";
 PhotoSlot g_photoCache[PHOTO_CACHE_SLOTS];
 std::map<std::string, bool> g_photoMiss;  // negative cache (known no-photo), per boot
 
@@ -600,8 +603,7 @@ void sendScanResults(const std::vector<ScanNet>& nets) {
 uint8_t* httpsGetToPsram(const char* url, size_t maxLen, size_t* outLen) {
     WiFiClientSecure client; client.setInsecure();
     HTTPClient http; http.begin(client, url);
-    // planespotters 403s generic UAs — must be descriptive with a contact URL
-    http.setUserAgent("flight-radar-esp32/1.0 (+https://github.com/disclaimer8/flight-radar-esp32)");
+    http.setUserAgent(PHOTO_UA);
     http.setConnectTimeout(2500); http.setTimeout(4000);
     if (http.GET() != 200) { http.end(); return nullptr; }
     int len = http.getSize();
@@ -656,12 +658,25 @@ PhotoResult fetchPhoto(const Aircraft& ac) {
     const char* kind = !ac.registration.empty() ? "reg" : "hex";
     std::snprintf(url, sizeof(url),
                   "https://api.planespotters.net/pub/photos/%s/%s", kind, key.c_str());
-    size_t jlen = 0;
-    uint8_t* jbuf = httpsGetToPsram(url, 32 * 1024, &jlen);
-    if (!jbuf) { g_photoMiss[key] = true; return res; }
-    PsPhoto meta = parsePlanespottersPhoto(std::string((char*)jbuf, jlen));
-    heap_caps_free(jbuf);
-    if (!meta.ok) { g_photoMiss[key] = true; return res; }
+    // The API endpoint responds CHUNKED over HTTP/1.1 (no Content-Length), so
+    // httpsGetToPsram's getSize() path can't read it. getString() de-chunks,
+    // and the body is tiny (~0.5-3 KB for one aircraft); only the image fetch
+    // below needs the PSRAM streaming path (the CDN does send Content-Length).
+    int code;
+    String jsonBody;
+    {
+        WiFiClientSecure client; client.setInsecure();
+        HTTPClient http; http.begin(client, url);
+        http.setUserAgent(PHOTO_UA);
+        http.setConnectTimeout(2500); http.setTimeout(4000);
+        code = http.GET();
+        if (code == 200) jsonBody = http.getString();
+        http.end();
+    }
+    if (code != 200) return res;  // transient/HTTP error: retry next entry
+    PsPhoto meta = parsePlanespottersPhoto(
+        std::string(jsonBody.c_str(), jsonBody.length()));
+    if (!meta.ok) { g_photoMiss[key] = true; return res; }  // confirmed no photo
 
     size_t ilen = 0;
     uint8_t* ibuf = httpsGetToPsram(meta.url.c_str(), 150 * 1024, &ilen);
