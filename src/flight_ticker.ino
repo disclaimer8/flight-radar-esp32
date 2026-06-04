@@ -236,6 +236,12 @@ void netTask(void*) {
             millis() - lastPoll >= POLL_INTERVAL_MS) {
             lastPoll = millis();
             netPoll();
+            static bool s_wmLogged = false;
+            if (!s_wmLogged && g_pollReady) {
+                s_wmLogged = true;
+                Serial.printf("net stack high-water: %u\n",
+                              (unsigned)uxTaskGetStackHighWaterMark(NULL));
+            }
         }
         if (g_routeReq) {
             char key[12];
