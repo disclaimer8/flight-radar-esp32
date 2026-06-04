@@ -167,7 +167,9 @@ volatile bool g_pollReady = false;
 // hexdb) and publishes. Fixed char buffers — std::string must not cross cores.
 char          g_routeReqKey[12] = "";
 volatile bool g_routeReq = false;      // loop sets, netTask clears
-char          g_routeResKey[12] = "";  // written LAST by netTask
+char          g_routeResKey[12] = "";  // written LAST by netTask: the key-match
+                                       // itself is the ready signal (no separate
+                                       // flag; a torn key just misses for 1 frame)
 char          g_routeResOrigin[8] = "";
 char          g_routeResDest[8] = "";
 
@@ -822,7 +824,7 @@ PhotoResult fetchPhoto(const Aircraft& ac) {
     std::snprintf(url, sizeof(url),
                   "https://api.planespotters.net/pub/photos/%s/%s", kind, key.c_str());
     // The API endpoint responds CHUNKED over HTTP/1.1 (no Content-Length), so
-    // httpsGetToPsram's getSize() path can't read it. getString() de-chunks,
+    // httpsGetToBuf's getSize() path can't read it. getString() de-chunks,
     // and the body is tiny (~0.5-3 KB for one aircraft); only the image fetch
     // below needs the PSRAM streaming path (the CDN does send Content-Length).
     int code;
