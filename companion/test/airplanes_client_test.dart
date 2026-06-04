@@ -24,6 +24,8 @@ void main() {
     final noField = list.firstWhere((a) => a.callsign == 'NOFIELD');
     expect(noField.altFt, isNull);
     expect(noField.gsKt, isNull);
+    // The sort relies on distKm! — lock the "always set after parse" invariant.
+    expect(list.every((a) => a.distKm != null), isTrue);
   });
 
   test('parseAircraft caps to 10 nearest', () {
