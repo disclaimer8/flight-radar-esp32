@@ -145,6 +145,10 @@ std::map<std::string, bool> g_photoMiss;  // negative cache (known no-photo), pe
 static const size_t PHOTO_DL_MAX = 150 * 1024;
 uint8_t* g_photoDlBuf = nullptr;   // lazily allocated once, never freed
 
+// Forward declaration: lookupRoute is defined after the photo pipeline globals.
+// netTask calls it on core 0 (its private cache); loop() must never call it.
+std::pair<std::string, std::string> lookupRoute(const std::string& callsign);
+
 // ---- netTask: all outbound HTTP on core 0 (render loop stays on core 1) ----
 // Hand-off = the house volatile-flag pattern: netTask is the only writer of
 // each result buffer, sets the ready flag LAST; loop() consumes at one safe
@@ -154,6 +158,14 @@ uint8_t* g_photoDlBuf = nullptr;   // lazily allocated once, never freed
 // Poll channel: netTask parses into its scratch, then swap-publishes here.
 std::vector<Aircraft> g_pollBuf;
 volatile bool g_pollReady = false;
+
+// Route channel: loop posts a callsign, netTask resolves (its private cache /
+// hexdb) and publishes. Fixed char buffers — std::string must not cross cores.
+char          g_routeReqKey[12] = "";
+volatile bool g_routeReq = false;      // loop sets, netTask clears
+char          g_routeResKey[12] = "";  // written LAST by netTask
+char          g_routeResOrigin[8] = "";
+char          g_routeResDest[8] = "";
 
 void netPoll() {
     // Persistent keep-alive client: handshake once (~1.5 s), then each poll
@@ -208,6 +220,15 @@ void netTask(void*) {
             lastPoll = millis();
             netPoll();
         }
+        if (g_routeReq) {
+            char key[12];
+            strlcpy(key, (const char*)g_routeReqKey, sizeof(key));
+            auto rt = lookupRoute(key);                     // netTask-private cache
+            strlcpy(g_routeResOrigin, rt.first.c_str(), sizeof(g_routeResOrigin));
+            strlcpy(g_routeResDest, rt.second.c_str(), sizeof(g_routeResDest));
+            strlcpy(g_routeResKey, key, sizeof(g_routeResKey));   // key last = result complete
+            g_routeReq = false;
+        }
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
@@ -233,6 +254,8 @@ int photoDrawCb(JPEGDRAW* d) {
     return 1;
 }
 
+// netTask-PRIVATE from here on: loop() must never call lookupRoute or read
+// g_routeCache (std::map across cores = UB).
 std::map<std::string, std::pair<std::string, std::string>> g_routeCache; // callsign -> (origin,dest)
 
 // Blocking hexdb.io route lookup; caches by callsign (incl. empties to avoid
@@ -483,10 +506,21 @@ void drawDetail() {
     // Reg / Op / Route block. Route origin/dest comes from the BLE packet when
     // present, else a lazy (cached) hexdb.io lookup on Wi-Fi. TC_DATUM so each
     // line draws downward from its y; rows below the fields, above the dots.
+    // Route comes from the netTask mailbox — never block the render loop on
+    // hexdb. Until the result lands, the row shows a "..." placeholder.
     std::string rOrigin = ac.origin, rDest = ac.dest;
-    if (rOrigin.empty() && WiFi.status() == WL_CONNECTED) {
-        auto rt = lookupRoute(ac.callsign);
-        rOrigin = rt.first; rDest = rt.second;
+    bool routePending = false;
+    if (rOrigin.empty() && WiFi.status() == WL_CONNECTED && !ac.callsign.empty()) {
+        if (ac.callsign == (const char*)g_routeResKey) {
+            rOrigin = (const char*)g_routeResOrigin;
+            rDest   = (const char*)g_routeResDest;
+        } else if (!g_routeReq) {
+            strlcpy(g_routeReqKey, ac.callsign.c_str(), sizeof(g_routeReqKey));
+            g_routeReq = true;         // flag last
+            routePending = true;
+        } else {
+            routePending = true;       // a request (this or another) is in flight
+        }
     }
     fb.setTextDatum(TC_DATUM);
     fb.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
@@ -497,6 +531,8 @@ void drawDetail() {
         fb.drawString(("Op " + op).c_str(), CX, 168, 2);
     if (!rOrigin.empty() && rOrigin != rDest)
         fb.drawString((rOrigin + " > " + rDest).c_str(), CX, 186, 2);
+    else if (routePending)
+        fb.drawString("...", CX, 186, 2);
 
     // page-position dots, spacing shrunk so the row always fits ~180px wide
     int n = (int)g_cache.size();
