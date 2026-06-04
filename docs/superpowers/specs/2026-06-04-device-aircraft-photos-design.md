@@ -25,7 +25,11 @@ it becomes the photo gesture.
 
 ## Data pipeline (firmware)
 
-1. **Lookup**: planespotters public API, registration first then hex —
+1. **Lookup**: planespotters public API, registration first then hex.
+   The firmware `Aircraft` struct currently lacks `hex` — add it, populated
+   from the airplanes.live JSON (`parseNearest`); the BLE wire stays v3
+   (hex stays empty on the BLE path, which is photo-less anyway).
+   Endpoints —
    `https://api.planespotters.net/pub/photos/reg/{reg}` /
    `.../hex/{hex}` — same order as the companion app. MUST send the
    descriptive User-Agent (`flight-radar-esp32/1.0 (+repo URL)`) — generic
