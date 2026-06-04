@@ -20,6 +20,17 @@ Flutter app for **Android and iOS** (hardware-verified). It does three things:
   BLE (a dedicated wifi-config characteristic) and the device joins the network and
   reports status back. Requires the feeder to be **stopped** (the device accepts a
   single BLE central at a time).
+- **Scan-to-pick network** — a scan button next to the SSID field requests the
+  device to scan nearby networks over BLE (`f1a90004`); results stream back as
+  per-network notifies and are presented in a picker sheet showing signal strength
+  (dBm), lock icon, and SSID. Tapping a row fills the SSID and focuses the
+  password field.
+- **Aircraft detail sheet** — tap any card on the home screen to open a live
+  bottom sheet: planespotters photo, EMG/MIL badges, full field grid
+  (altitude/speed/track/squawk/route/distance/registration/ICAO24/position/on-ground),
+  and an OSM mini-map (`flutter_map`) with a track-rotated aircraft marker and
+  observer dot. Receives live updates from the status stream; shows a "Signal
+  lost" banner if the aircraft drops out while the sheet is open.
 
 ## Architecture
 
@@ -34,14 +45,20 @@ Flutter app for **Android and iOS** (hardware-verified). It does three things:
 - `lib/packet/ble_packet.dart` — v3 aircraft-packet encoder (byte-exact with
   `src/ble_core.h`). `lib/packet/wifi_config_packet.dart` — the Wi-Fi provisioning
   packet encoder + status decoder (byte-exact with `src/wifi_config_core.h`).
+  `lib/packet/wifi_scan_packet.dart` — scan-request encoder + scan-record decoder +
+  `ScanCollector` (byte-exact with `src/wifi_scan_core.h`).
 - `lib/ble/ble_manager.dart` — the feeder's BLE link. `lib/ble/wifi_provisioner.dart`
-  — the standalone on-demand provisioning flow.
+  — the standalone on-demand provisioning flow. `lib/ble/device_finder.dart` — shared
+  `findRadarDevice` helper (DRY between provisioner and scanner).
+  `lib/ble/wifi_scanner.dart` — the scan session: writes request, collects notifies,
+  returns the network list.
 - `lib/ui/` — `home_screen.dart` (status + Start/Stop + provisioning section +
-  aircraft list) and `aircraft_card.dart`.
+  aircraft list), `aircraft_card.dart`, `network_picker.dart` (bottom sheet for
+  scan results), `aircraft_detail_sheet.dart` (live detail with OSM mini-map).
 
 Key deps: `flutter_blue_plus` (BLE), `geolocator` (GPS), `flutter_foreground_task`
 (Android background), `flutter_local_notifications` (alerts), `permission_handler`,
-`http`.
+`http`, `flutter_map` (OSM mini-map in detail sheet), `latlong2` (coordinates).
 
 ## Run
 

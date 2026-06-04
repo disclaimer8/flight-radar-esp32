@@ -64,11 +64,11 @@ state machine that ties them together.
   in NM, used to build the airplanes.live URL).
 
 Keeping these pure is what makes the project testable: see
-`test/test_core/test_main.cpp` (52 cases — cardinal bearings, projection
+`test/test_core/test_main.cpp` (56 cases — cardinal bearings, projection
 clamping and off-axis geometry, compass rounding boundaries, formatter edge
 cases, vector/altitude-band/emergency-squawk helpers, the parse/sort/distance
 tests, the BLE packet parser, range-zoom helpers, route/airline-code helpers,
-and coord/wifi-config parsers).
+coord/wifi-config parsers, and wifi-scan request/record packet helpers).
 
 ### `src/coord_core.h` — coordinate validation (pure, Arduino-free, host-tested)
 - `parseLatLon(latStr, lonStr, &lat, &lon)` — validates two C-string coordinates
@@ -164,6 +164,8 @@ companion app (`companion/`, Android + iOS) — see "Phone companion" below.
   `f1a90002-7e1d-4c2a-9b3f-1a2b3c4d5e6f`
 - Wi-Fi-config characteristic (`WRITE | WRITE_NR | NOTIFY`):
   `f1a90003-7e1d-4c2a-9b3f-1a2b3c4d5e6f`
+- Wi-Fi-scan characteristic (`WRITE | NOTIFY`):
+  `f1a90004-7e1d-4c2a-9b3f-1a2b3c4d5e6f`
 
 **Wire format** (v3, little-endian; both ESP32 and host are LE). A 12-byte
 header followed by `count` × 48-byte records:
@@ -241,6 +243,40 @@ BLE. It writes a `"WC"` magic packet to the wifi-config characteristic
 `0` = applying, `1` = connected + IP, `2` = failed + reason string). See
 `src/wifi_config_core.h` for the packet format.
 
+**BLE Wi-Fi-scan path (`f1a90004`).** The companion app writes a 3-byte scan
+request to the wifi-scan characteristic `f1a90004-…` (WRITE|NOTIFY); the write
+callback only sets a flag (`g_wifiScanReady`) — the actual `WiFi.scanNetworks`
+call happens from `loop()` to avoid racing the NimBLE task. Results are sent
+back as one NOTIFY per network (≤ 40 bytes each, fits any practical MTU); a
+final notify with `total = 0` means no networks were found. The firmware
+deduplicates by SSID (keeping the strongest RSSI), sorts descending by RSSI,
+caps at 15 results, and drops hidden networks (empty SSID). Single-radio
+caveat: scanning while STA-connected can briefly stall the in-flight HTTPS poll.
+
+Wire formats (little-endian):
+
+**Scan request** (app → device, 3 bytes):
+
+| Offset | Field | Value |
+|--------|-------|-------|
+| `0–1` | magic `"WS"` | `0x57 0x53` |
+| `2` | version | `1` |
+
+**Scan record** (device → app, per NOTIFY):
+
+| Offset | Field | Bytes |
+|--------|-------|-------|
+| `0–1` | magic `"WN"` (`0x57 0x4E`) | 2 |
+| `2` | version (`1`) | 1 |
+| `3` | total networks (uint8; `0` = none found) | 1 |
+| `4` | index (0-based, uint8) | 1 |
+| `5` | RSSI (int8, dBm) | 1 |
+| `6` | secured (uint8; `1` = has password) | 1 |
+| `7` | ssidLen (uint8) | 1 |
+| `8…` | SSID bytes (ssidLen, ASCII) | ≤ 32 |
+
+See `src/wifi_scan_core.h` for the packet helpers and the `ScanCollector` dedup logic.
+
 **Observer location at runtime.** The observer lat/lon are the runtime globals
 `g_obsLat`/`g_obsLon`. They are loaded from NVS at boot (with `config.h`
 `MY_LAT`/`MY_LON` as the compile-time default on a fresh device), and updated by
@@ -291,10 +327,31 @@ password and sends an `encodeWifiConfig` packet to the wifi-config characteristi
 IP or failure reason) decoded by `parseWifiStatus`. Implemented in
 `lib/ble/wifi_provisioner.dart` and `lib/packet/wifi_config_packet.dart`.
 
+**Wi-Fi network scan (scan-to-pick).** A scan button next to the SSID field
+triggers a `WifiScanner` BLE session (`lib/ble/wifi_scanner.dart`): it writes a
+`"WS"` scan-request packet to `f1a90004-…`, collects the per-network NOTIFY
+stream via a `ScanCollector` (`lib/packet/wifi_scan_packet.dart`), and on
+completion opens a `NetworkPicker` bottom sheet (`lib/ui/network_picker.dart`)
+listing each network with signal-strength icon, dBm value, and lock indicator.
+Tapping a row fills the SSID field and focuses the password input. The scan,
+feeder, and send operations are mutually exclusive (single central peripheral).
+The device side of this flow is `src/wifi_scan_core.h` + the `f1a90004`
+characteristic in `src/flight_ticker.ino`.
+
+**Aircraft detail sheet.** Tapping any card on the home screen opens
+`lib/ui/aircraft_detail_sheet.dart`: a live bottom sheet that subscribes to the
+status stream filtered by hex. It shows a planespotters photo, EMG/MIL badges, a
+full field grid (altitude, speed, track, squawk, route, distance, registration,
+ICAO24, position, on-ground), and an OSM mini-map rendered via `flutter_map`
+(aircraft marker rotated by track + observer dot). The sheet receives live
+updates while open; if the aircraft drops out of the feed it shows a "Signal
+lost" banner while retaining the last known data.
+
 Stack: `flutter_blue_plus` (BLE), `geolocator` (GPS), `permission_handler`,
-`flutter_local_notifications`; the Dart packet encoder in `lib/packet/` mirrors
-`src/ble_core.h` (v3) and `src/wifi_config_core.h`. `scripts/ble_send.py`
-remains the laptop smoke-test harness.
+`flutter_local_notifications`, `flutter_map`, `latlong2`; the Dart packet
+encoder in `lib/packet/` mirrors `src/ble_core.h` (v3), `src/wifi_config_core.h`,
+and `src/wifi_scan_core.h`. `scripts/ble_send.py` remains the laptop smoke-test
+harness.
 
 ## State machine
 
