@@ -20,8 +20,11 @@ state machine that ties them together.
                      │  screen coords + display strings
                      ▼
    flight_ticker.ino ───────────  TFT_eSPI sprite + state machine (firmware)
-        ▲                                   │
-        └──── cst816s.h (touch, INT ISR) ───┘
+        ▲            ▲                          │
+        │            │ volatile-flag hand-off   │
+        │         netTask (core 0)              │
+        │         poll / route / photo          │
+        └──── cst816s.h (touch, INT ISR) ───────┘
 ```
 
 ## Modules
@@ -65,7 +68,7 @@ state machine that ties them together.
   in NM, used to build the airplanes.live URL).
 
 Keeping these pure is what makes the project testable: see
-`test/test_core/test_main.cpp` (60 cases — cardinal bearings, projection
+`test/test_core/test_main.cpp` (61 cases — cardinal bearings, projection
 clamping and off-axis geometry, compass rounding boundaries, formatter edge
 cases, vector/altitude-band/emergency-squawk helpers, the parse/sort/distance
 tests (incl. hex field), the BLE packet parser, range-zoom helpers,
@@ -109,7 +112,8 @@ request/record packet helpers, and photo_core helpers).
 The **PSRAM 8-slot LRU cache** (registration-or-hex keyed), **per-boot negative
 cache** (also keyed by registration-or-hex), **JPEGDEC streaming decode**, and
 **HTTPS fetch** all live in `flight_ticker.ino` and are **not** host-tested.
-The blocking 1–3 s fetch+decode runs on the main thread inside `loop()`;
+The fetch+decode (~1–3 s) runs on **core 0 inside `netTask`**, not on the render
+loop; `loop()` is notified via `g_photoReady` when the result is ready.
 Wi-Fi-only mode suppresses the fetch entirely ("No Wi-Fi" shown).
 
 ### `src/ble_core.h` — BLE wire protocol + parser (pure, Arduino-free, host-tested)
@@ -131,28 +135,59 @@ the gesture register (`0x01`) and exposes a `TouchGesture` enum
 `TG_NONE` on any I2C error, so a missing/asleep chip never blocks rendering.
 
 ### `src/flight_ticker.ino` — firmware
-- **Networking** — `connectWifi()` (via `WiFiManager.autoConnect`; see "Wi-Fi
-  provisioning" below) and `pollApi()` (HTTPS via `WiFiClientSecure` +
-  `setInsecure()`, because airplanes.live 301-redirects HTTP). Polled on a
-  non-blocking 15 s `millis` timer in both views. The poll URL uses
-  `queryRadiusNm(kRangePresets[kRangeCount - 1])` (100 km / 54 NM) as the fixed
-  reception radius; `RADIUS_NM` in `config.h` is legacy and unused at runtime.
-- **Rendering** — a full-screen 240×240 `TFT_eSprite` is the framebuffer; every
-  frame is drawn into the sprite and `pushSprite`'d in one shot (no flicker).
-  `drawRadar()`, `drawDetail()`, and `drawPhoto()` are the three renderers.
-  `drawRadar()` colors each blip by `altBand()` (via the `kAltColors` table),
-  draws a `vectorEnd()` heading line, rings + labels the nearest aircraft in
-  white, and — for any `isEmergencySquawk()` aircraft — blinks it red and shows
+- **Networking** — all outbound HTTP runs on `netTask` (pinned to core 0, 12 KB
+  stack), leaving `loop()` (Arduino `loopTask`, core 1) free to render every
+  frame without blocking. Three channels carry work between the cores:
+
+  | Channel | Direction | Hand-off globals |
+  |---------|-----------|-----------------|
+  | **Poll** | netTask → loop | `g_pollBuf` + `g_pollReady` |
+  | **Route** | loop → netTask → loop | `g_routeReqKey/g_routeReq` + `g_routeResKey/Origin/Dest` |
+  | **Photo** | loop → netTask → loop | `g_photoReqReg/Hex/g_photoReq` + `g_photoResPx/Credit/Ok/g_photoReady` |
+
+  Every channel follows the **single-writer + flag-written-last** contract
+  inherited from the BLE→loop path: the writer fills all payload fields before
+  setting the `volatile bool` flag; the reader clears the flag before consuming.
+  Internal SRAM on ESP32-S3 is uncached and per-core stores land in order, so no
+  extra memory barriers are needed — the same assumption the NimBLE callbacks have
+  always made.
+
+  `netTask` owns a **persistent keep-alive TLS client** (`WiFiClientSecure` +
+  `HTTPClient.setReuse(true)`) for the poll: the TLS handshake runs once (~1.5 s)
+  and subsequent polls are bare GETs (~200 ms). On any HTTP failure the socket is
+  torn down so the next cycle re-handshakes cleanly. `netTask` also owns
+  `g_routeCache`, the PSRAM photo cache (`g_photoCache`), JPEGDEC (`g_jpeg`), and
+  the persistent download scratch buffer (`g_photoDlBuf`, allocated once from
+  PSRAM). `loop()` **must never** call `lookupRoute()` or `fetchPhoto()`, nor read
+  those caches — cross-core access to `std::map` is UB, and the PSRAM buffers
+  would race.
+
+  `connectWifi()` (via `WiFiManager.autoConnect`) runs from `setup()` before
+  `netTask` is spawned, then `xTaskCreatePinnedToCore(netTask, "net", 12288,
+  nullptr, 1, nullptr, 0)` starts the task. `RADIUS_NM` in `config.h` is legacy
+  and unused at runtime; the poll URL uses `queryRadiusNm(kRangePresets[kRangeCount
+  - 1])` (100 km / 54 NM).
+
+- **Display** — SPI runs at **80 MHz** (QIO flash, 16 MB). A full-screen 240×240
+  `TFT_eSprite` is the framebuffer; every frame is drawn into the sprite and
+  `pushSprite`'d in one shot (no flicker). The backlight is driven by LEDC PWM:
+  full brightness on touch, dimmed to ~30% after 60 s idle (largest power draw on
+  the board). `drawRadar()`, `drawDetail()`, and `drawPhoto()` are the three
+  renderers. `drawRadar()` colors each blip by `altBand()` (via the `kAltColors`
+  table), draws a `vectorEnd()` heading line, rings + labels the nearest aircraft
+  in white, and — for any `isEmergencySquawk()` aircraft — blinks it red and shows
   an `EMERGENCY <code>` banner. Aircraft beyond the current display range
   (`isOnRim`) are drawn as small grey rim dots at the correct bearing on the
   outermost ring. A range readout (e.g. `50km`) draws top-center below the `N`
   label. `drawDetail()` shows callsign, type + compass direction + squawk,
   distance, altitude/speed, and a Reg / Op / Route block — registration from
   the `Aircraft` struct, airline code via `airlineCode(callsign)`, and route
-  origin→dest from either the BLE packet or a lazy cached `hexdb.io` lookup.
-  `drawPhoto()` copies a cached 240×240 RGB565 framebuffer from PSRAM directly
-  to the sprite and overlays the attribution line at the bottom; if the photo is
-  not yet in cache it triggers a blocking fetch+decode cycle.
+  origin→dest from either the BLE packet or the netTask route mailbox (shows `...`
+  until the result lands). `drawPhoto()` copies a cached 240×240 RGB565 framebuffer
+  from PSRAM directly to the sprite and overlays the attribution line at the bottom;
+  while the photo is loading it shows a `Loading photo...` spinner (non-blocking —
+  `loop()` keeps rendering); a failed lookup shows `No photo` for 1.5 s then
+  returns to DETAIL.
 - **Touch** — a falling-edge ISR latches INT events; `handleTouch()` reads the
   gesture once per event with a 300 ms debounce (see Hardware notes for why).
 - **BLE ingest** — a NimBLE peripheral (`IngestCallbacks::onWrite`) receives
@@ -166,18 +201,24 @@ the gesture register (`0x01`) and exposes a `TouchGesture` enum
 
 ## Data flow per poll
 
-1. `pollApi()` requests `/v2/point/{lat}/{lon}/{radius_nm}` where `lat`/`lon`
-   are `g_obsLat`/`g_obsLon` (runtime globals from NVS or config.h default) and
-   `radius_nm` = `queryRadiusNm(100.0)` = 54 NM.
-2. `parseNearest()` turns the JSON into a sorted, capped `vector<Aircraft>`
-   stored in `g_cache` (cap `RADAR_PLOT_CAP` = 24, to keep distant aircraft
-   available as rim dots); `g_idx` (the detail-carousel cursor) is clamped to
-   the new size.
-3. On failure, `g_stale` is set — the radar keeps drawing the last snapshot with
-   a red stale dot.
+1. `netTask` (core 0) calls `netPoll()` every `POLL_INTERVAL_MS` (15 s) when
+   Wi-Fi is connected. `netPoll()` GETs
+   `/v2/point/{lat}/{lon}/{radius_nm}` where `lat`/`lon` are snapshotted from
+   `g_obsLat`/`g_obsLon` at the start of each call (the snapshot avoids a torn
+   64-bit read across cores) and `radius_nm` = `queryRadiusNm(100.0)` = 54 NM.
+2. On success, `parseNearest()` turns the JSON into a sorted, capped
+   `vector<Aircraft>` (cap `RADAR_PLOT_CAP` = 24, to keep distant aircraft
+   available as rim dots), which is swap-published into `g_pollBuf`; then
+   `g_pollReady` is set **last** (flag-last contract).
+3. `loop()` checks `g_pollReady` once per frame. On consume it swaps `g_pollBuf`
+   into `g_cache`, clamps `g_idx`, clears `g_stale`, and bumps `g_lastPoll`.
+4. On poll failure, `netTask` sets `g_stale = true` (single writer for the `true`
+   transition; `loop()` clears it in the consume block). The radar keeps drawing
+   the last snapshot with a red stale dot.
 
-Rendering reads `g_cache` every frame independently of the poll, so the sweep
-animates smoothly between polls.
+`loop()` reads `g_cache` every frame independently of the poll, so the sweep
+animates smoothly between polls — the render loop is never blocked by a network
+call.
 
 ## BLE data path (fallback)
 
@@ -244,10 +285,18 @@ green `W` (Wi-Fi), red `W` (Wi-Fi up, poll failing), cyan `B` (BLE), red
 
 **Concurrency.** The BLE write callbacks run in the NimBLE task. They do the
 minimum: copy the bytes into a buffer and set a flag (`g_blePacketReady` or
-`g_wifiCfgReady`). `loop()` (the same single thread that renders) does the
-actual parse/apply and updates `g_cache` / the radar center / Wi-Fi config. So
-the render path never races the BLE task — no locking needed, the flag is the
-handoff. The same pattern applies to both characteristics.
+`g_wifiCfgReady`). `loop()` (the same single thread that renders, on core 1)
+does the actual parse/apply and updates `g_cache` / the radar center / Wi-Fi
+config. So the render path never races the BLE task — no locking needed, the
+flag is the handoff. The same pattern applies to both characteristics.
+
+`netTask` (core 0) follows the identical **single-writer + flag-written-last**
+discipline for the three network channels: `netTask` is the sole writer of each
+result buffer and sets the `volatile bool` ready flag only after all payload
+fields are committed; `loop()` clears the flag before consuming. `loop()` is the
+sole writer of `g_cache` (which is not accessed by `netTask`). Cross-core
+payloads are fixed-size `char` arrays or swapped `std::vector`s — never live
+`std::string` or `std::map` references across the core boundary.
 
 ## Wi-Fi provisioning
 
@@ -410,13 +459,19 @@ harness.
   immediately if the list becomes empty. Swipe up (Wi-Fi only) enters PHOTO.
 - **PHOTO**: shows a planespotters.net photo for the current aircraft with a
   `(c) photographer / planespotters.net` attribution overlay. On entry,
-  `fetchPhoto()` (in `flight_ticker.ino`) is called: it checks the 8-slot PSRAM
-  LRU cache (keyed by registration, or hex when registration is absent) for an
-  instant hit; on a miss it runs a blocking HTTPS fetch + JPEGDEC decode (1–3 s,
-  loading indicator shown), using `parsePlanespottersPhoto` from `photo_core.h`
-  to extract the URL and photographer from the API JSON. Any touch returns to
-  DETAIL; idle for 15 s returns directly to RADAR. In BLE mode (no Wi-Fi) a
-  `"No Wi-Fi"` message is shown instead and swipe-up from DETAIL is suppressed.
+  `enterPhotoView()` posts a request to the **netTask photo mailbox** and
+  immediately switches the view to PHOTO — the render loop is never blocked.
+  `netTask` calls `fetchPhoto()` on core 0: it checks the 8-slot PSRAM LRU cache
+  (keyed by registration, or hex when registration is absent) for an instant hit;
+  on a miss it runs the HTTPS fetch + JPEGDEC decode (~1–3 s) and
+  swap-publishes the result via `g_photoReady` (flag last). `loop()` applies the
+  result: on success it sets `g_photoPx` + `g_photoCredit`; on failure it sets a
+  1.5 s `g_photoMsgUntil` deadline that shows `No photo` before returning to
+  DETAIL. While the request is in flight `drawPhoto()` shows a `Loading photo...`
+  spinner and the radar sweep continues uninterrupted on core 1. Any touch
+  cancels the loading state (a late result from netTask is silently discarded);
+  idle for 15 s returns directly to RADAR. In BLE mode (no Wi-Fi) a `"No Wi-Fi"`
+  message is shown instead and swipe-up from DETAIL is suppressed.
 
 ## Configuration
 

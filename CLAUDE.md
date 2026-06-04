@@ -23,7 +23,7 @@ Integrated board — no wiring; flash over USB-C.
 ## Toolchain (macOS): PlatformIO
 
 `brew install platformio`. Everything from the terminal, no Arduino IDE.
-- Tests (host, no hardware): `pio test -e native -f test_core` (60 cases)
+- Tests (host, no hardware): `pio test -e native -f test_core` (61 cases)
 - Companion app tests: `cd companion && flutter test` (53 cases)
 - Build: `pio run -e esp32-s3`
 - Flash: `pio run -e esp32-s3 -t upload` (native USB auto-resets; no BOOT hold)
@@ -84,11 +84,20 @@ Config + secrets in `src/config.h` (copy from `config.example.h`; gitignored).
   NimBLE + Wi-Fi/TLS + 115 KB sprite all coexist in SRAM (verified on device).
 - BLE freshness window is short (30 s) — when testing, send right before observing
   or widen `BLE_FRESHNESS_MS`.
+- **netTask contract**: all outbound HTTP runs on `netTask` (core 0, 12 KB stack,
+  `xTaskCreatePinnedToCore`). `loop()` (core 1) is the **only writer of `g_cache`**.
+  Route and photo requests travel via fixed-char-array mailboxes (`g_routeReq*`,
+  `g_photoReq*`); **never call `lookupRoute()` or `fetchPhoto()` from `loop()`** —
+  those own `std::map` and PSRAM structures that must not be touched from core 1.
+  All three channels use single-writer + flag-written-last (same as the BLE path).
+  The poll TLS client is persistent (`setReuse(true)`) for keep-alive performance.
+  SPI runs at **80 MHz**; the backlight dims to ~30% after 60 s idle.
 - **Photo view** (swipe up from DETAIL, Wi-Fi only): planespotters.net requires a
   descriptive `User-Agent` — generic/empty UAs get HTTP 403. Fetch + JPEGDEC decode
-  blocks `loop()` for 1–3 s (accepted pattern; loading indicator shown). 8-slot
-  PSRAM LRU cache (~920 KB); per-boot negative cache suppresses repeated failed
-  lookups. Swipe-up in BLE mode is suppressed ("No Wi-Fi" shown instead).
+  runs on `netTask` (core 0, ~1–3 s); `loop()` shows `Loading photo...` and keeps
+  rendering while the fetch runs. 8-slot PSRAM LRU cache (~920 KB); per-boot
+  negative cache suppresses repeated failed lookups. Swipe-up in BLE mode is
+  suppressed ("No Wi-Fi" shown instead).
 
 ## Ideas / backlog
 

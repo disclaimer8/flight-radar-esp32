@@ -36,10 +36,15 @@ static const uint16_t kAltColors[6] = {
 // the gesture across them. Collapse one touch into one action with a short cooldown.
 static const unsigned long TOUCH_DEBOUNCE_MS = 300;
 
+// Backlight dim: full on touch, ~30% after a minute idle (largest power draw).
+static const unsigned long BL_DIM_MS = 60000;
+static const uint8_t BL_FULL = 255, BL_DIM = 76;
+
 std::vector<Aircraft> g_cache;
 unsigned long g_lastPoll  = 0;
 unsigned long g_lastTouch = 0;
 bool g_stale = false;
+uint8_t g_blLevel = 255;   // current backlight duty (avoid redundant ledcWrite)
 
 // Data source arbitration: Wi-Fi is primary; BLE (phone gateway) is the fallback.
 enum Source { SRC_NONE, SRC_WIFI, SRC_BLE };
@@ -135,6 +140,135 @@ static const char* PHOTO_UA =
 PhotoSlot g_photoCache[PHOTO_CACHE_SLOTS];
 std::map<std::string, bool> g_photoMiss;  // negative cache (known no-photo), per boot
 
+// Persistent download scratch: avoids interleaving transient 150 KB
+// allocations with the permanent 115 KB photo slots (PSRAM fragmentation).
+static const size_t PHOTO_DL_MAX = 150 * 1024;
+uint8_t* g_photoDlBuf = nullptr;   // lazily allocated once, never freed
+
+// Forward declaration: lookupRoute is defined after the photo pipeline globals.
+// netTask calls it on core 0 (its private cache); loop() must never call it.
+std::pair<std::string, std::string> lookupRoute(const std::string& callsign);
+
+// Forward declaration: fetchPhoto is defined after the photo pipeline globals.
+// netTask calls it on core 0 (its private cache); loop() must never call it.
+PhotoResult fetchPhoto(const Aircraft& ac);
+
+// ---- netTask: all outbound HTTP on core 0 (render loop stays on core 1) ----
+// Hand-off = the house volatile-flag pattern: netTask is the only writer of
+// each result buffer, sets the ready flag LAST; loop() consumes at one safe
+// point and clears the flag. Internal SRAM is uncached and per-core stores
+// land in order, same assumption the BLE->loop path has always made.
+
+// Poll channel: netTask parses into its scratch, then swap-publishes here.
+std::vector<Aircraft> g_pollBuf;
+volatile bool g_pollReady = false;
+
+// Route channel: loop posts a callsign, netTask resolves (its private cache /
+// hexdb) and publishes. Fixed char buffers — std::string must not cross cores.
+char          g_routeReqKey[12] = "";
+volatile bool g_routeReq = false;      // loop sets, netTask clears
+char          g_routeResKey[12] = "";  // written LAST by netTask: the key-match
+                                       // itself is the ready signal (no separate
+                                       // flag; a torn key just misses for 1 frame)
+char          g_routeResOrigin[8] = "";
+char          g_routeResDest[8] = "";
+
+// Photo channel: loop posts reg/hex, netTask runs the fetch/decode pipeline
+// (its private cache) and publishes the cache-owned pixel pointer + credit.
+char          g_photoReqReg[12] = "";
+char          g_photoReqHex[8] = "";
+volatile bool g_photoReq = false;      // loop sets, netTask clears
+uint16_t*     g_photoResPx = nullptr;
+char          g_photoResCredit[48] = "";
+volatile bool g_photoResOk = false;
+volatile bool g_photoReady = false;    // written LAST by netTask
+
+bool          g_photoLoading = false;          // PHOTO view: request in flight
+unsigned long g_photoMsgUntil = 0;             // non-blocking "No photo" deadline
+
+void netPoll() {
+    // Persistent keep-alive client: handshake once (~1.5 s), then each poll
+    // is a bare GET (~200 ms). On any failure tear down so the next cycle
+    // re-handshakes from scratch.
+    static WiFiClientSecure s_client;
+    static HTTPClient s_http;
+    static bool s_init = false;
+    if (!s_init) {
+        s_client.setInsecure();   // public read-only data; no CA pinning
+        s_http.setReuse(true);
+        s_init = true;
+    }
+    // Snapshot the observer location once per cycle: loop() rewrites these
+    // doubles on portal save, and a 64-bit store isn't atomic across cores.
+    // A torn read would only mis-center one poll (self-heals next cycle);
+    // the snapshot at least guarantees the URL and the parse use one pair.
+    double obsLat = g_obsLat, obsLon = g_obsLon;
+    char url[160];
+    std::snprintf(url, sizeof(url),
+        "https://api.airplanes.live/v2/point/%.4f/%.4f/%d",
+        obsLat, obsLon, queryRadiusNm(kRangePresets[kRangeCount - 1]));
+    s_http.begin(s_client, url);
+    s_http.setUserAgent("flight-ticker-esp32");
+    s_http.setConnectTimeout(8000);
+    s_http.setTimeout(8000);
+    int code = s_http.GET();
+    if (code == 200) {
+        String payload = s_http.getString();
+        s_http.end();   // setReuse keeps the socket alive
+        std::vector<Aircraft> fresh = parseNearest(
+            std::string(payload.c_str()), obsLat, obsLon,
+            RADAR_PLOT_CAP, HIDE_GROUND_AIRCRAFT);
+        Serial.printf("poll ok: %u aircraft\n", (unsigned)fresh.size());
+        if (!g_pollReady) {            // loop consumed the previous batch
+            g_pollBuf.swap(fresh);
+            g_pollReady = true;        // flag last
+        }
+    } else {
+        Serial.printf("poll failed: %d\n", code);
+        s_http.end();
+        s_client.stop();               // force a clean handshake next cycle
+        g_stale = true;                // single-writer note: see Step 3
+    }
+}
+
+void netTask(void*) {
+    unsigned long lastPoll = 0;
+    for (;;) {
+        if (WiFi.status() == WL_CONNECTED &&
+            millis() - lastPoll >= POLL_INTERVAL_MS) {
+            lastPoll = millis();
+            netPoll();
+            static bool s_wmLogged = false;
+            if (!s_wmLogged && g_pollReady) {
+                s_wmLogged = true;
+                Serial.printf("net stack high-water: %u\n",
+                              (unsigned)uxTaskGetStackHighWaterMark(NULL));
+            }
+        }
+        if (g_routeReq) {
+            char key[12];
+            strlcpy(key, (const char*)g_routeReqKey, sizeof(key));
+            auto rt = lookupRoute(key);                     // netTask-private cache
+            strlcpy(g_routeResOrigin, rt.first.c_str(), sizeof(g_routeResOrigin));
+            strlcpy(g_routeResDest, rt.second.c_str(), sizeof(g_routeResDest));
+            strlcpy(g_routeResKey, key, sizeof(g_routeResKey));   // key last = result complete
+            g_routeReq = false;
+        }
+        if (g_photoReq) {
+            Aircraft ac;
+            ac.registration = (const char*)g_photoReqReg;
+            ac.hex          = (const char*)g_photoReqHex;
+            PhotoResult r = fetchPhoto(ac);    // netTask-private cache/decoder
+            g_photoResPx = r.px;
+            strlcpy(g_photoResCredit, r.photographer.c_str(), sizeof(g_photoResCredit));
+            g_photoResOk = r.ok;
+            g_photoReady = true;               // flag last
+            g_photoReq = false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
+
 JPEGDEC g_jpeg;
 // JPEGDEC delivers MCU blocks via callback; these route them into the target
 // framebuffer with the centering crop offsets (negative = letterbox margin).
@@ -156,6 +290,8 @@ int photoDrawCb(JPEGDRAW* d) {
     return 1;
 }
 
+// netTask-PRIVATE from here on: loop() must never call lookupRoute or read
+// g_routeCache (std::map across cores = UB).
 std::map<std::string, std::pair<std::string, std::string>> g_routeCache; // callsign -> (origin,dest)
 
 // Blocking hexdb.io route lookup; caches by callsign (incl. empties to avoid
@@ -201,7 +337,7 @@ void saveLocation(double lat, double lon) {
 }
 
 // Current display range (outer ring) in km, selected by touch zoom. Replaces the
-// old fixed rangeKm(); the API reception radius is separate (see pollApi()).
+// old fixed rangeKm(); the API reception radius is separate (see netPoll()).
 static double displayRangeKm() { return kRangePresets[g_rangeIdx]; }
 
 // The LCD screen shown while the Wi-Fi setup portal is open.
@@ -271,38 +407,6 @@ void startPortalOnDemand() {
     setupPortalParams(wm, latParam, lonParam);
     drawSetupScreen();
     wm.startConfigPortal("FlightRadar-Setup");
-}
-
-void pollApi() {
-    // Called only when WiFi is connected (see loop()). No blocking reconnect here.
-
-    char url[160];
-    std::snprintf(url, sizeof(url),
-        "https://api.airplanes.live/v2/point/%.4f/%.4f/%d",
-        g_obsLat, g_obsLon, queryRadiusNm(kRangePresets[kRangeCount - 1]));
-
-    // Cloudflare 301-redirects http->https; talk TLS directly. Public read-only
-    // data, so skip cert validation rather than pin a CA.
-    WiFiClientSecure client;
-    client.setInsecure();
-    HTTPClient http;
-    http.begin(client, url);
-    http.setUserAgent("flight-ticker-esp32");
-    http.setConnectTimeout(8000);
-    http.setTimeout(8000);
-    int code = http.GET();
-    if (code == 200) {
-        String payload = http.getString();
-        g_cache = parseNearest(std::string(payload.c_str()), g_obsLat, g_obsLon, RADAR_PLOT_CAP, HIDE_GROUND_AIRCRAFT);
-        if (g_idx >= g_cache.size()) g_idx = 0;
-        g_centerLat = g_obsLat; g_centerLon = g_obsLon;
-        g_stale = false;
-        Serial.printf("poll ok: %u aircraft\n", (unsigned)g_cache.size());
-    } else {
-        g_stale = true;
-        Serial.printf("poll failed: HTTP %d\n", code);
-    }
-    http.end();
 }
 
 void drawRadar() {
@@ -438,10 +542,21 @@ void drawDetail() {
     // Reg / Op / Route block. Route origin/dest comes from the BLE packet when
     // present, else a lazy (cached) hexdb.io lookup on Wi-Fi. TC_DATUM so each
     // line draws downward from its y; rows below the fields, above the dots.
+    // Route comes from the netTask mailbox — never block the render loop on
+    // hexdb. Until the result lands, the row shows a "..." placeholder.
     std::string rOrigin = ac.origin, rDest = ac.dest;
-    if (rOrigin.empty() && WiFi.status() == WL_CONNECTED) {
-        auto rt = lookupRoute(ac.callsign);
-        rOrigin = rt.first; rDest = rt.second;
+    bool routePending = false;
+    if (rOrigin.empty() && WiFi.status() == WL_CONNECTED && !ac.callsign.empty()) {
+        if (ac.callsign == (const char*)g_routeResKey) {
+            rOrigin = (const char*)g_routeResOrigin;
+            rDest   = (const char*)g_routeResDest;
+        } else if (!g_routeReq) {
+            strlcpy(g_routeReqKey, ac.callsign.c_str(), sizeof(g_routeReqKey));
+            g_routeReq = true;         // flag last
+            routePending = true;
+        } else {
+            routePending = true;       // a request (this or another) is in flight
+        }
     }
     fb.setTextDatum(TC_DATUM);
     fb.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
@@ -452,6 +567,8 @@ void drawDetail() {
         fb.drawString(("Op " + op).c_str(), CX, 168, 2);
     if (!rOrigin.empty() && rOrigin != rDest)
         fb.drawString((rOrigin + " > " + rDest).c_str(), CX, 186, 2);
+    else if (routePending)
+        fb.drawString("...", CX, 186, 2);
 
     // page-position dots, spacing shrunk so the row always fits ~180px wide
     int n = (int)g_cache.size();
@@ -489,8 +606,9 @@ void flashPhotoMsg(const char* msg) {
     delay(1200);
 }
 
-// Swipe-up handler in DETAIL: fetch (or cache-hit) the photo and switch view.
-// Failure paths flash a message and stay in DETAIL.
+// Swipe-up handler in DETAIL: post a photo request to netTask and switch view.
+// The "No Wi-Fi" path still blocks 1.2 s (flashPhotoMsg) and drains touch;
+// the success path is non-blocking — netTask does the fetch while loop() renders.
 void enterPhotoView() {
     if (g_cache.empty()) return;
     if (g_idx >= g_cache.size()) g_idx = 0;
@@ -500,25 +618,43 @@ void enterPhotoView() {
         drainTouch();
         return;
     }
-    fb.fillSprite(TFT_BLACK);
-    fb.setTextDatum(MC_DATUM);
-    fb.setTextColor(TFT_CYAN, TFT_BLACK);
-    fb.drawString("Loading photo...", CX, CY, 2);
-    fb.pushSprite(0, 0);
-    PhotoResult r = fetchPhoto(ac);
-    if (!r.ok) {
-        flashPhotoMsg("No photo");
-        drainTouch();
-        return;
-    }
-    drainTouch();   // the blocking fetch latched this swipe's lift events
-    g_photoPx = r.px;
-    g_photoCredit = r.photographer;
+    // Same guard as the route channel: while a fetch is in flight netTask may
+    // be reading the request buffers — never overwrite them mid-read. The user
+    // just re-swipes once the previous fetch drains (≤3 s).
+    if (g_photoReq) return;
+    strlcpy(g_photoReqReg, ac.registration.c_str(), sizeof(g_photoReqReg));
+    strlcpy(g_photoReqHex, ac.hex.c_str(), sizeof(g_photoReqHex));
+    g_photoReq = true;
+    g_photoLoading = true;
+    g_photoPx = nullptr;
+    g_photoMsgUntil = 0;
     g_view = PHOTO;
 }
 
 void drawPhoto() {
-    if (!g_photoPx) { g_view = DETAIL; drawDetail(); return; }
+    if (!g_photoPx) {
+        if (g_photoMsgUntil != 0) {                 // failed: flash then return
+            if (millis() >= g_photoMsgUntil) {
+                g_photoMsgUntil = 0;
+                g_view = DETAIL; drawDetail(); return;
+            }
+            fb.fillSprite(TFT_BLACK);
+            fb.setTextDatum(MC_DATUM);
+            fb.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+            fb.drawString("No photo", CX, CY, 2);
+            fb.pushSprite(0, 0);
+            return;
+        }
+        if (g_photoLoading) {                       // request in flight
+            fb.fillSprite(TFT_BLACK);
+            fb.setTextDatum(MC_DATUM);
+            fb.setTextColor(TFT_CYAN, TFT_BLACK);
+            fb.drawString("Loading photo...", CX, CY, 2);
+            fb.pushSprite(0, 0);
+            return;
+        }
+        g_view = DETAIL; drawDetail(); return;      // shouldn't happen; safe out
+    }
     // JPEGDEC emits little-endian RGB565; pushImage wants swapped bytes.
     // (If hardware smoke shows red/blue swapped, flip this to false.)
     fb.setSwapBytes(true);
@@ -579,6 +715,8 @@ void handleTouch() {
     } else { // PHOTO: any touch returns to the detail page
         g_view = DETAIL;
         g_photoPx = nullptr;   // cache still owns the pixels
+        g_photoLoading = false;   // a late netTask result will be discarded
+        g_photoMsgUntil = 0;
     }
 }
 
@@ -616,19 +754,23 @@ void sendScanResults(const std::vector<ScanNet>& nets) {
     }
 }
 
-// Download a URL into a PSRAM buffer (caller frees). Same TLS pattern as the
-// hexdb lookup; requires Content-Length (planespotters sends it) and caps at
-// maxLen. Returns null on any failure.
-uint8_t* httpsGetToPsram(const char* url, size_t maxLen, size_t* outLen) {
+// netTask-PRIVATE from here on: loop() must never call fetchPhoto, httpsGetToBuf,
+// or read g_photoCache, g_photoMiss, g_jpeg, g_photoDlBuf (photo pipeline is
+// owned by netTask on core 0; cross-core access is UB for the map + data race
+// for the PSRAM buffers).
+
+// Download a URL into a caller-supplied buffer. Same TLS pattern as the hexdb
+// lookup; requires Content-Length (planespotters sends it) and caps at maxLen.
+// Writes into buf (must be at least maxLen bytes) and sets *outLen on success.
+// Returns true on success; never allocates or frees memory.
+bool httpsGetToBuf(const char* url, uint8_t* buf, size_t maxLen, size_t* outLen) {
     WiFiClientSecure client; client.setInsecure();
     HTTPClient http; http.begin(client, url);
     http.setUserAgent(PHOTO_UA);
     http.setConnectTimeout(2500); http.setTimeout(4000);
-    if (http.GET() != 200) { http.end(); return nullptr; }
+    if (http.GET() != 200) { http.end(); return false; }
     int len = http.getSize();
-    if (len <= 0 || (size_t)len > maxLen) { http.end(); return nullptr; }
-    uint8_t* buf = (uint8_t*)heap_caps_malloc(len, MALLOC_CAP_SPIRAM);
-    if (!buf) { http.end(); return nullptr; }
+    if (len <= 0 || (size_t)len > maxLen) { http.end(); return false; }
     WiFiClient* s = http.getStreamPtr();
     size_t got = 0;
     unsigned long t0 = millis();
@@ -637,14 +779,18 @@ uint8_t* httpsGetToPsram(const char* url, size_t maxLen, size_t* outLen) {
         if (n > 0) got += (size_t)n; else delay(10);
     }
     http.end();
-    if (got != (size_t)len) { heap_caps_free(buf); return nullptr; }
+    if (got != (size_t)len) return false;
     *outLen = got;
-    return buf;
+    return true;
 }
 
 // LRU-insert a decoded photo. Eviction can never free the on-screen photo:
 // fetches only happen on PHOTO entry, and the entering photo gets the
 // freshest lastUse.
+//
+// Eviction invariant: inserts/evictions happen only while a request is
+// outstanding; while a request is outstanding the loop displays "Loading"
+// (g_photoPx == nullptr); therefore eviction can never free a displayed photo.
 void photoCacheInsert(const std::string& key, uint16_t* px, const std::string& photographer) {
     PhotoSlot* slot = nullptr;
     for (auto& s : g_photoCache) if (!s.px) { slot = &s; break; }
@@ -678,7 +824,7 @@ PhotoResult fetchPhoto(const Aircraft& ac) {
     std::snprintf(url, sizeof(url),
                   "https://api.planespotters.net/pub/photos/%s/%s", kind, key.c_str());
     // The API endpoint responds CHUNKED over HTTP/1.1 (no Content-Length), so
-    // httpsGetToPsram's getSize() path can't read it. getString() de-chunks,
+    // httpsGetToBuf's getSize() path can't read it. getString() de-chunks,
     // and the body is tiny (~0.5-3 KB for one aircraft); only the image fetch
     // below needs the PSRAM streaming path (the CDN does send Content-Length).
     int code;
@@ -697,18 +843,21 @@ PhotoResult fetchPhoto(const Aircraft& ac) {
         std::string(jsonBody.c_str(), jsonBody.length()));
     if (!meta.ok) { g_photoMiss[key] = true; return res; }  // confirmed no photo
 
+    if (!g_photoDlBuf) {
+        g_photoDlBuf = (uint8_t*)heap_caps_malloc(PHOTO_DL_MAX, MALLOC_CAP_SPIRAM);
+        if (!g_photoDlBuf) return res;
+    }
     size_t ilen = 0;
     // Via the re-encoding proxy: planespotters thumbs are progressive JPEGs,
     // which JPEGDEC can't really decode (see buildProxiedPhotoUrl).
     std::string imgUrl = buildProxiedPhotoUrl(meta.url);
-    uint8_t* ibuf = httpsGetToPsram(imgUrl.c_str(), 150 * 1024, &ilen);
-    if (!ibuf) return res;  // transient network failure: don't negative-cache
+    if (!httpsGetToBuf(imgUrl.c_str(), g_photoDlBuf, PHOTO_DL_MAX, &ilen)) return res;  // transient network failure: don't negative-cache
 
     uint16_t* px = (uint16_t*)heap_caps_malloc(240 * 240 * 2, MALLOC_CAP_SPIRAM);
-    if (!px) { heap_caps_free(ibuf); return res; }
+    if (!px) return res;
     std::memset(px, 0, 240 * 240 * 2);  // black letterbox margins
 
-    if (g_jpeg.openRAM(ibuf, (int)ilen, photoDrawCb)) {
+    if (g_jpeg.openRAM(g_photoDlBuf, (int)ilen, photoDrawCb)) {
         int d = pickJpegScale(g_jpeg.getWidth(), g_jpeg.getHeight());
         int opt = (d == 8) ? JPEG_SCALE_EIGHTH
                 : (d == 4) ? JPEG_SCALE_QUARTER
@@ -731,7 +880,6 @@ PhotoResult fetchPhoto(const Aircraft& ac) {
         heap_caps_free(px);
         g_photoMiss[key] = true;
     }
-    heap_caps_free(ibuf);
     return res;
 }
 
@@ -762,6 +910,10 @@ void setup() {
     tft.init();
     tft.setRotation(0);
     tft.fillScreen(TFT_BLACK);
+    // Take over the backlight pin with LEDC PWM (core 2.x API).
+    ledcSetup(0, 5000, 8);          // channel 0, 5 kHz, 8-bit
+    ledcAttachPin(TFT_BL, 0);
+    ledcWrite(0, BL_FULL);
     fb.setColorDepth(16);
     if (!fb.createSprite(240, 240)) Serial.println("sprite alloc failed");
     touch.begin();
@@ -807,8 +959,9 @@ void setup() {
     tft.drawString("WiFi...", CX, CY, 4);
 
     connectWifi();
-    pollApi();
-    g_lastPoll  = millis();
+    // First poll comes from netTask within ~2 s of boot.
+    xTaskCreatePinnedToCore(netTask, "net", 12288, nullptr, 1, nullptr, 0);
+    g_lastPoll = millis();
     g_lastTouch = millis();
 }
 
@@ -824,6 +977,28 @@ void loop() {
             if (g_idx >= g_cache.size()) g_idx = 0;
             g_bleLastRx = millis();
         }
+    }
+    if (g_pollReady) {
+        g_cache.swap(g_pollBuf);
+        g_pollBuf.clear();
+        g_pollReady = false;           // netTask may publish again now
+        if (g_idx >= g_cache.size()) g_idx = 0;
+        g_centerLat = g_obsLat; g_centerLon = g_obsLon;
+        g_stale = false;
+        g_lastPoll = millis();         // freshness = when applied
+    }
+    if (g_photoReady) {
+        g_photoReady = false;
+        if (g_view == PHOTO && g_photoLoading) {
+            g_photoLoading = false;
+            if (g_photoResOk) {
+                g_photoPx = g_photoResPx;
+                g_photoCredit = (const char*)g_photoResCredit;
+            } else {
+                g_photoMsgUntil = millis() + 1500;   // "No photo", then back
+            }
+        }
+        // else: user already left PHOTO — discard the late result.
     }
     if (g_wifiCfgReady) {
         g_wifiCfgReady = false;
@@ -857,12 +1032,8 @@ void loop() {
         }
         // n == WIFI_SCAN_RUNNING (-1): keep waiting
     }
-    // pollApi() blocks up to ~8s (HTTP timeout); the sweep freezes and touches are
-    // ignored for that window. Acceptable on this single-threaded firmware — not a bug.
-    if (now - g_lastPoll >= POLL_INTERVAL_MS) {
-        if (WiFi.status() == WL_CONNECTED) pollApi();   // skip when offline; no blocking reconnect
-        g_lastPoll = now;
-    }
+    // Polling lives on netTask (core 0); g_lastPoll is bumped at consume time
+    // above and only feeds the staleness indicator now.
 
     // Source arbitration: Wi-Fi wins when connected; else BLE if fresh; else nothing.
     // g_bleLastRx != 0 gate keeps BLE dormant until a real packet arrives (at boot
@@ -878,7 +1049,13 @@ void loop() {
     if (g_view != RADAR && millis() - g_lastTouch >= IDLE_RETURN_MS) {
         g_view = RADAR;
         g_photoPx = nullptr;
+        g_photoLoading = false;   // a late netTask result will be discarded
+        g_photoMsgUntil = 0;
     }
+
+    // Backlight: dim after a minute of no touches, restore instantly on touch.
+    uint8_t want = (millis() - g_lastTouch >= BL_DIM_MS) ? BL_DIM : BL_FULL;
+    if (want != g_blLevel) { g_blLevel = want; ledcWrite(0, want); }
 
     if (g_view == RADAR) drawRadar();
     else if (g_view == DETAIL) drawDetail();
