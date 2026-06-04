@@ -147,82 +147,90 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // The whole screen is one scroll view: in landscape the fixed status +
+    // Wi-Fi sections alone are taller than the viewport, so a plain Column
+    // overflows.
     return Scaffold(
       appBar: AppBar(title: const Text('Flight Radar Companion')),
-      body: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _row('Device', _status.ble),
-                _row('GPS', _status.fix),
-                _row('Last packet', '${_status.count} aircraft'),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton(
-                    onPressed: _toggle,
-                    child: Text(_running ? 'Stop' : 'Start feeding device'),
+      body: CustomScrollView(
+        slivers: [
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _row('Device', _status.ble),
+                  _row('GPS', _status.fix),
+                  _row('Last packet', '${_status.count} aircraft'),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                      onPressed: _toggle,
+                      child: Text(_running ? 'Stop' : 'Start feeding device'),
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
-          const Divider(height: 1),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(24, 12, 24, 8),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('Configure device Wi-Fi',
-                    style: TextStyle(fontWeight: FontWeight.bold)),
-                TextField(
-                  controller: _ssidCtrl,
-                  decoration: const InputDecoration(labelText: 'SSID'),
-                ),
-                TextField(
-                  controller: _passCtrl,
-                  obscureText: true,
-                  decoration: const InputDecoration(labelText: 'Password'),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    FilledButton(
-                      onPressed: (_running || _provisioning) ? null : _sendWifi,
-                      child: const Text('Send to device'),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        _running ? 'Stop feeding to configure device Wi-Fi' : _provStatus,
-                        style: const TextStyle(color: Colors.black54),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
+          const SliverToBoxAdapter(child: Divider(height: 1)),
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(24, 12, 24, 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Configure device Wi-Fi',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  TextField(
+                    controller: _ssidCtrl,
+                    decoration: const InputDecoration(labelText: 'SSID'),
+                  ),
+                  TextField(
+                    controller: _passCtrl,
+                    obscureText: true,
+                    decoration: const InputDecoration(labelText: 'Password'),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      FilledButton(
+                        onPressed: (_running || _provisioning) ? null : _sendWifi,
+                        child: const Text('Send to device'),
                       ),
-                    ),
-                  ],
-                ),
-              ],
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          _running ? 'Stop feeding to configure device Wi-Fi' : _provStatus,
+                          style: const TextStyle(color: Colors.black54),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
           ),
-          const Divider(height: 1),
-          Expanded(
-            child: _status.aircraft.isEmpty
-                ? const Center(
-                    child: Text('Start feeding to see nearby aircraft',
-                        style: TextStyle(color: Colors.black54)))
-                : ListView.builder(
-                    itemCount: _status.aircraft.length,
-                    itemBuilder: (context, i) => AircraftCard(
-                        key: ValueKey(_status.aircraft[i].hex),
-                        aircraft: _status.aircraft[i],
-                        photos: _photos),
-                  ),
-          ),
+          const SliverToBoxAdapter(child: Divider(height: 1)),
+          if (_status.aircraft.isEmpty)
+            const SliverFillRemaining(
+              hasScrollBody: false,
+              child: Center(
+                  child: Text('Start feeding to see nearby aircraft',
+                      style: TextStyle(color: Colors.black54))),
+            )
+          else
+            SliverList.builder(
+              itemCount: _status.aircraft.length,
+              itemBuilder: (context, i) => AircraftCard(
+                  key: ValueKey(_status.aircraft[i].hex),
+                  aircraft: _status.aircraft[i],
+                  photos: _photos),
+            ),
         ],
       ),
     );
