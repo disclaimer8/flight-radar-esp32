@@ -610,6 +610,10 @@ void enterPhotoView() {
         drainTouch();
         return;
     }
+    // Same guard as the route channel: while a fetch is in flight netTask may
+    // be reading the request buffers — never overwrite them mid-read. The user
+    // just re-swipes once the previous fetch drains (≤3 s).
+    if (g_photoReq) return;
     strlcpy(g_photoReqReg, ac.registration.c_str(), sizeof(g_photoReqReg));
     strlcpy(g_photoReqHex, ac.hex.c_str(), sizeof(g_photoReqHex));
     g_photoReq = true;
