@@ -4,7 +4,9 @@ Live aircraft radar on a round touch display. The firmware polls airplanes.live
 for nearby aircraft and plots them North-up by bearing + distance; touch range
 presets (25 / 50 / 100 km) zoom the view and out-of-range traffic appears as rim
 dots. A tap opens a detail carousel showing callsign, altitude, speed, heading,
-plus registration, operator (airline ICAO), and route (origin→dest). Wi-Fi is
+plus registration, operator (airline ICAO), and route (origin→dest); swipe up
+(Wi-Fi only) opens a photo view fetching a planespotters.net aircraft photo into
+the round display (PSRAM-cached, JPEGDEC-decoded, `photo_core.h`). Wi-Fi is
 provisioned via a WiFiManager captive portal (`FlightRadar-Setup` AP) or over BLE
 from the companion app; an optional BLE fallback path lets a phone feed aircraft
 when Wi-Fi is down (see below).
@@ -21,7 +23,7 @@ Integrated board — no wiring; flash over USB-C.
 ## Toolchain (macOS): PlatformIO
 
 `brew install platformio`. Everything from the terminal, no Arduino IDE.
-- Tests (host, no hardware): `pio test -e native -f test_core` (56 cases)
+- Tests (host, no hardware): `pio test -e native -f test_core` (60 cases)
 - Companion app tests: `cd companion && flutter test` (53 cases)
 - Build: `pio run -e esp32-s3`
 - Flash: `pio run -e esp32-s3 -t upload` (native USB auto-resets; no BOOT hold)
@@ -32,14 +34,15 @@ Integrated board — no wiring; flash over USB-C.
 ## Code layout
 
 Pure, host-testable core + thin Arduino layer:
-- `src/flight_core.h` — parse (incl. `track`/`squawk`/`registration`/`origin`/`dest`) / haversine / sort (Arduino-free)
+- `src/flight_core.h` — parse (incl. `track`/`squawk`/`registration`/`hex`/`origin`/`dest`) / haversine / sort (Arduino-free)
 - `src/render_core.h` — bearing / polar projection / `vectorEnd` / `altBand` / `isEmergencySquawk` / compass / formatting + route/operator helpers (`parseHexdbRoute`, `airlineCode`) + range-zoom helpers (`kRangePresets` / `clampRangeIndex` / `isOnRim` / `queryRadiusNm`) (Arduino-free, tested)
 - `src/cst816s.h` — CST816S touch driver
 - `src/ble_core.h` — BLE wire protocol (v3) + `parseBlePacket` (Arduino-free, tested)
 - `src/coord_core.h` — `parseLatLon` (captive-portal coordinate validation, host-tested)
 - `src/wifi_config_core.h` — `parseWifiConfig` (BLE Wi-Fi provisioning packet, host-tested)
 - `src/wifi_scan_core.h` — scan-request parser + scan-record encoder + `dedupSortCap` (host-tested; Dart mirror + `ScanCollector` in `companion/lib/packet/wifi_scan_packet.dart`)
-- `src/flight_ticker.ino` — Wi-Fi/HTTP + NimBLE peripheral + TFT_eSPI sprite + radar/detail state machine
+- `src/photo_core.h` — `parsePlanespottersPhoto` + `pickJpegScale` / `cropOffset`; 8-slot PSRAM LRU + per-boot negative cache; JPEGDEC streaming decode; host-tested
+- `src/flight_ticker.ino` — Wi-Fi/HTTP + NimBLE peripheral + TFT_eSPI sprite + radar/detail/photo state machine
 - `scripts/ble_send.py` — host BLE smoke-test sender (bleak), emits v3 packets
 - `companion/` — Flutter phone app (Android + iOS): BLE feeder (polls airplanes.live at the phone's GPS, feeds aircraft to the device when Wi-Fi is down) + live aircraft viewer (planespotters photos, route, EMG/MIL badges, emergency/military local notifications) + BLE Wi-Fi provisioning section (incl. scan-to-pick network via `f1a90004`) + aircraft detail sheet (OSM mini-map, full field grid, live updates)
 
@@ -81,6 +84,11 @@ Config + secrets in `src/config.h` (copy from `config.example.h`; gitignored).
   NimBLE + Wi-Fi/TLS + 115 KB sprite all coexist in SRAM (verified on device).
 - BLE freshness window is short (30 s) — when testing, send right before observing
   or widen `BLE_FRESHNESS_MS`.
+- **Photo view** (swipe up from DETAIL, Wi-Fi only): planespotters.net requires a
+  descriptive `User-Agent` — generic/empty UAs get HTTP 403. Fetch + JPEGDEC decode
+  blocks `loop()` for 1–3 s (accepted pattern; loading indicator shown). 8-slot
+  PSRAM LRU cache (~920 KB); per-boot negative cache suppresses repeated failed
+  lookups. Swipe-up in BLE mode is suppressed ("No Wi-Fi" shown instead).
 
 ## Ideas / backlog
 
