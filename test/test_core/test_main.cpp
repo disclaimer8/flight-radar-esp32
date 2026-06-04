@@ -600,6 +600,12 @@ void test_wifi_scan_empty_encode() {
     TEST_ASSERT_EQUAL_HEX8(0, buf[3]);   // total=0 → none found
 }
 
+void test_parse_nearest_hex(void) {
+    auto list = parseNearest(SAMPLE_JSON, 48.0, 11.0, 5);
+    TEST_ASSERT_EQUAL_UINT32(3, list.size());
+    TEST_ASSERT_EQUAL_STRING("3c6abc", list[0].hex.c_str());  // nearest = DLH4AB
+}
+
 void test_wifi_scan_dedup_sort_cap() {
     std::vector<ScanNet> in = {
         {"B", -80, true}, {"A", -60, false}, {"B", -50, true}, {"", -10, false},
@@ -677,5 +683,6 @@ int main(int, char **) {
     RUN_TEST(test_wifi_scan_record_encode);
     RUN_TEST(test_wifi_scan_empty_encode);
     RUN_TEST(test_wifi_scan_dedup_sort_cap);
+    RUN_TEST(test_parse_nearest_hex);
     return UNITY_END();
 }
