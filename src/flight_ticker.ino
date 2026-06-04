@@ -48,9 +48,11 @@ double        g_centerLat = MY_LAT;   // radar center: config in Wi-Fi mode, pac
 double        g_centerLon = MY_LON;
 unsigned long g_bleLastRx = 0;        // millis of last accepted BLE packet
 
-enum View { RADAR, DETAIL };
+enum View { RADAR, DETAIL, PHOTO };
 View    g_view = RADAR;
 size_t  g_idx  = 0;
+uint16_t*   g_photoPx = nullptr;   // cache-owned; valid only in PHOTO view
+std::string g_photoCredit;
 int g_rangeIdx = 1;  // index into kRangePresets; default 50 km. Restored from NVS in setup().
 double g_obsLat = MY_LAT;  // observer location; default from config.h, restored from NVS in setup()
 double g_obsLon = MY_LON;
@@ -463,6 +465,61 @@ void drawDetail() {
     fb.pushSprite(0, 0);
 }
 
+// Centered one-liner shown for ~1.2 s (blocking — same one-shot acceptance as
+// the photo fetch itself), then the next frame redraws the current view.
+void flashPhotoMsg(const char* msg) {
+    fb.fillSprite(TFT_BLACK);
+    fb.setTextDatum(MC_DATUM);
+    fb.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    fb.drawString(msg, CX, CY, 2);
+    fb.pushSprite(0, 0);
+    delay(1200);
+}
+
+// Swipe-up handler in DETAIL: fetch (or cache-hit) the photo and switch view.
+// Failure paths flash a message and stay in DETAIL.
+void enterPhotoView() {
+    if (g_cache.empty()) return;
+    if (g_idx >= g_cache.size()) g_idx = 0;
+    const Aircraft& ac = g_cache[g_idx];
+    if (WiFi.status() != WL_CONNECTED) { flashPhotoMsg("No Wi-Fi"); return; }
+    fb.fillSprite(TFT_BLACK);
+    fb.setTextDatum(MC_DATUM);
+    fb.setTextColor(TFT_CYAN, TFT_BLACK);
+    fb.drawString("Loading photo...", CX, CY, 2);
+    fb.pushSprite(0, 0);
+    PhotoResult r = fetchPhoto(ac);
+    if (!r.ok) { flashPhotoMsg("No photo"); return; }
+    g_photoPx = r.px;
+    g_photoCredit = r.photographer;
+    g_view = PHOTO;
+}
+
+void drawPhoto() {
+    if (!g_photoPx) { g_view = DETAIL; drawDetail(); return; }
+    // JPEGDEC emits little-endian RGB565; pushImage wants swapped bytes.
+    // (If hardware smoke shows red/blue swapped, flip this to false.)
+    fb.setSwapBytes(true);
+    fb.pushImage(0, 0, 240, 240, g_photoPx);
+    fb.setSwapBytes(false);
+    if (g_idx >= g_cache.size()) g_idx = 0;
+    if (!g_cache.empty()) {
+        const Aircraft& ac = g_cache[g_idx];
+        std::string cs = ac.callsign.empty() ? "------" : ac.callsign;
+        fb.setTextDatum(TC_DATUM);
+        fb.setTextColor(TFT_WHITE, TFT_BLACK);
+        fb.drawString(cs.c_str(), CX, 28, 2);
+    }
+    if (!g_photoCredit.empty()) {
+        // GLCD font 1 has no '©'; "(c)" keeps the required attribution ASCII.
+        fb.setTextDatum(BC_DATUM);
+        fb.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+        fb.drawString(("(c) " + g_photoCredit + " / planespotters.net").c_str(),
+                      CX, 214, 1);
+    }
+    fb.pushSprite(0, 0);
+}
+
 void handleTouch() {
     // Only touch the I2C bus when the ISR latched an INT edge (a real touch event).
     // Idle: no edge -> no bus read -> radar stays smooth. One edge per touch also
@@ -487,14 +544,19 @@ void handleTouch() {
         } else if (g == TG_LONG) {              // long-press: reopen Wi-Fi setup portal
             startPortalOnDemand();
         }
-    } else { // DETAIL
+    } else if (g_view == DETAIL) {
         if (g == TG_LEFT && !g_cache.empty()) {
             g_idx = (g_idx + 1) % g_cache.size();
         } else if (g == TG_RIGHT && !g_cache.empty()) {
             g_idx = (g_idx + g_cache.size() - 1) % g_cache.size();
+        } else if (g == TG_UP) {
+            enterPhotoView();
         } else if (g == TG_CLICK || g == TG_DOWN) {
             g_view = RADAR;
         }
+    } else { // PHOTO: any touch returns to the detail page
+        g_view = DETAIL;
+        g_photoPx = nullptr;   // cache still owns the pixels
     }
 }
 
@@ -773,9 +835,14 @@ void loop() {
     else                                                               g_source = SRC_NONE;
 
     handleTouch();
-    if (g_view == DETAIL && now - g_lastTouch >= IDLE_RETURN_MS) g_view = RADAR;
+    if (g_view != RADAR && now - g_lastTouch >= IDLE_RETURN_MS) {
+        g_view = RADAR;
+        g_photoPx = nullptr;
+    }
 
-    if (g_view == RADAR) drawRadar(); else drawDetail();
+    if (g_view == RADAR) drawRadar();
+    else if (g_view == DETAIL) drawDetail();
+    else drawPhoto();
     delay(16); // ~60 fps cap
 }
 #endif // ARDUINO
