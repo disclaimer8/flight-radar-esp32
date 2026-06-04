@@ -136,9 +136,6 @@ PhotoSlot g_photoCache[PHOTO_CACHE_SLOTS];
 std::map<std::string, bool> g_photoMiss;  // negative cache (known no-photo), per boot
 
 JPEGDEC g_jpeg;
-// On-screen pipeline diagnostics (USB-CDC drops runtime prints, so the display
-// is the debug channel on this device). TEMP: remove after hardware bring-up.
-std::string g_photoDiag;
 // JPEGDEC delivers MCU blocks via callback; these route them into the target
 // framebuffer with the centering crop offsets (negative = letterbox margin).
 uint16_t* g_decTarget = nullptr;
@@ -508,11 +505,9 @@ void enterPhotoView() {
     fb.setTextColor(TFT_CYAN, TFT_BLACK);
     fb.drawString("Loading photo...", CX, CY, 2);
     fb.pushSprite(0, 0);
-    g_photoDiag.clear();
     PhotoResult r = fetchPhoto(ac);
     if (!r.ok) {
-        // TEMP bring-up diag: show the failing stage instead of a bare "No photo"
-        flashPhotoMsg(g_photoDiag.empty() ? "No photo" : g_photoDiag.c_str());
+        flashPhotoMsg("No photo");
         drainTouch();
         return;
     }
@@ -544,11 +539,6 @@ void drawPhoto() {
         fb.drawString(("(c) " + g_photoCredit + " / planespotters.net").c_str(),
                       CX, 214, 1);
     }
-    if (!g_photoDiag.empty()) {   // TEMP bring-up diag overlay
-        fb.setTextDatum(BC_DATUM);
-        fb.setTextColor(TFT_YELLOW, TFT_BLACK);
-        fb.drawString(g_photoDiag.c_str(), CX, 200, 1);
-    }
     fb.pushSprite(0, 0);
 }
 
@@ -563,7 +553,6 @@ void handleTouch() {
     uint8_t g = touch.readGesture();
     if (g == TG_NONE) return;
     g_lastTouch = now;
-    Serial.printf("[touch] gesture=%u view=%d\n", g, (int)g_view);
 
     if (g_view == RADAR) {
         if (g == TG_CLICK) {
@@ -703,31 +692,24 @@ PhotoResult fetchPhoto(const Aircraft& ac) {
         if (code == 200) jsonBody = http.getString();
         http.end();
     }
-    if (code != 200) { g_photoDiag = "api " + std::to_string(code); return res; }
+    if (code != 200) return res;  // transient/HTTP error: retry next entry
     PsPhoto meta = parsePlanespottersPhoto(
         std::string(jsonBody.c_str(), jsonBody.length()));
-    if (!meta.ok) {
-        g_photoDiag = "nometa len" + std::to_string(jsonBody.length());
-        g_photoMiss[key] = true;
-        return res;  // confirmed no photo
-    }
+    if (!meta.ok) { g_photoMiss[key] = true; return res; }  // confirmed no photo
 
     size_t ilen = 0;
     // Via the re-encoding proxy: planespotters thumbs are progressive JPEGs,
     // which JPEGDEC can't really decode (see buildProxiedPhotoUrl).
     std::string imgUrl = buildProxiedPhotoUrl(meta.url);
     uint8_t* ibuf = httpsGetToPsram(imgUrl.c_str(), 150 * 1024, &ilen);
-    if (!ibuf) { g_photoDiag = "imgfail"; return res; }  // transient: don't negative-cache
+    if (!ibuf) return res;  // transient network failure: don't negative-cache
 
     uint16_t* px = (uint16_t*)heap_caps_malloc(240 * 240 * 2, MALLOC_CAP_SPIRAM);
-    if (!px) { g_photoDiag = "nopsram"; heap_caps_free(ibuf); return res; }
+    if (!px) { heap_caps_free(ibuf); return res; }
     std::memset(px, 0, 240 * 240 * 2);  // black letterbox margins
 
-    g_photoDiag = "img" + std::to_string(ilen);
     if (g_jpeg.openRAM(ibuf, (int)ilen, photoDrawCb)) {
         int d = pickJpegScale(g_jpeg.getWidth(), g_jpeg.getHeight());
-        g_photoDiag += " j" + std::to_string(g_jpeg.getWidth()) + "x" +
-                       std::to_string(g_jpeg.getHeight()) + " d" + std::to_string(d);
         int opt = (d == 8) ? JPEG_SCALE_EIGHTH
                 : (d == 4) ? JPEG_SCALE_QUARTER
                 : (d == 2) ? JPEG_SCALE_HALF : 0;
@@ -738,13 +720,6 @@ PhotoResult fetchPhoto(const Aircraft& ac) {
         int ok = g_jpeg.decode(0, 0, opt);
         g_jpeg.close();
         g_decTarget = nullptr;
-        {   // diag: how much did the decoder actually write?
-            int nz = 0;
-            for (int i = 0; i < 240 * 240; i++) if (px[i]) nz++;
-            g_photoDiag += " rc" + std::to_string(ok) +
-                           " e" + std::to_string(g_jpeg.getLastError()) +
-                           " nz" + std::to_string(nz);
-        }
         if (ok) {
             photoCacheInsert(key, px, meta.photographer);
             res.ok = true; res.px = px; res.photographer = meta.photographer;
@@ -753,7 +728,6 @@ PhotoResult fetchPhoto(const Aircraft& ac) {
             g_photoMiss[key] = true;  // undecodable image: don't retry each tap
         }
     } else {
-        g_photoDiag += " openfail e" + std::to_string(g_jpeg.getLastError());
         heap_caps_free(px);
         g_photoMiss[key] = true;
     }
