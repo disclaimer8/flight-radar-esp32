@@ -109,7 +109,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _sendWifi() async {
-    if (_ssidCtrl.text.isEmpty || _provisioning) return;
+    // _scanning guard: scan and provisioning are separate BLE sessions racing
+    // for the same single-central peripheral — never run both.
+    if (_ssidCtrl.text.isEmpty || _provisioning || _scanning) return;
     if (!await _requestBlePermissions()) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -252,7 +254,9 @@ class _HomeScreenState extends State<HomeScreen> {
                   Row(
                     children: [
                       FilledButton(
-                        onPressed: (_running || _provisioning) ? null : _sendWifi,
+                        onPressed: (_running || _provisioning || _scanning)
+                            ? null
+                            : _sendWifi,
                         child: const Text('Send to device'),
                       ),
                       const SizedBox(width: 12),
