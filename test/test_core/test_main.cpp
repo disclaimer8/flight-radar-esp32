@@ -667,6 +667,18 @@ void test_pick_jpeg_scale_and_crop(void) {
 void setUp(void) {}
 void tearDown(void) {}
 
+void test_build_proxied_photo_url(void) {
+    TEST_ASSERT_EQUAL_STRING(
+        "https://wsrv.nl/?url=t.plnspttrs.net/a/b_280.jpg&w=240&h=240&fit=cover&output=jpg",
+        buildProxiedPhotoUrl("https://t.plnspttrs.net/a/b_280.jpg").c_str());
+    TEST_ASSERT_EQUAL_STRING(
+        "https://wsrv.nl/?url=x.example/p.jpg&w=240&h=240&fit=cover&output=jpg",
+        buildProxiedPhotoUrl("http://x.example/p.jpg").c_str());
+    TEST_ASSERT_EQUAL_STRING(
+        "https://wsrv.nl/?url=bare.host/p.jpg&w=240&h=240&fit=cover&output=jpg",
+        buildProxiedPhotoUrl("bare.host/p.jpg").c_str());
+}
+
 int main(int, char **) {
     UNITY_BEGIN();
     RUN_TEST(test_ftToM);
@@ -729,5 +741,6 @@ int main(int, char **) {
     RUN_TEST(test_parse_planespotters_photo);
     RUN_TEST(test_parse_planespotters_photo_misses);
     RUN_TEST(test_pick_jpeg_scale_and_crop);
+    RUN_TEST(test_build_proxied_photo_url);
     return UNITY_END();
 }

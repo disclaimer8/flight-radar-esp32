@@ -37,6 +37,18 @@ inline PsPhoto parsePlanespottersPhoto(const std::string& json) {
     return r;
 }
 
+// planespotters thumbnails are PROGRESSIVE JPEGs, which JPEGDEC silently
+// degrades to a 1/8-scale DC-only preview (rc=1 but useless). Route the image
+// through the wsrv.nl re-encoding proxy instead: baseline JPEG, exactly
+// 240x240 cover-cropped, ~4x smaller download. Source URLs carry no query
+// params, so embedding them unencoded (scheme stripped) is safe.
+inline std::string buildProxiedPhotoUrl(const std::string& src) {
+    std::string bare = src;
+    if (bare.rfind("https://", 0) == 0) bare = bare.substr(8);
+    else if (bare.rfind("http://", 0) == 0) bare = bare.substr(7);
+    return "https://wsrv.nl/?url=" + bare + "&w=240&h=240&fit=cover&output=jpg";
+}
+
 // Largest JPEGDEC divisor d in {1,2,4,8} whose scaled image still covers
 // 240x240 in BOTH dimensions; 1 when even full size doesn't (letterbox).
 inline int pickJpegScale(int srcW, int srcH) {
