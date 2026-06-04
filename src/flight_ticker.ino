@@ -36,10 +36,15 @@ static const uint16_t kAltColors[6] = {
 // the gesture across them. Collapse one touch into one action with a short cooldown.
 static const unsigned long TOUCH_DEBOUNCE_MS = 300;
 
+// Backlight dim: full on touch, ~30% after a minute idle (largest power draw).
+static const unsigned long BL_DIM_MS = 60000;
+static const uint8_t BL_FULL = 255, BL_DIM = 76;
+
 std::vector<Aircraft> g_cache;
 unsigned long g_lastPoll  = 0;
 unsigned long g_lastTouch = 0;
 bool g_stale = false;
+uint8_t g_blLevel = 255;   // current backlight duty (avoid redundant ledcWrite)
 
 // Data source arbitration: Wi-Fi is primary; BLE (phone gateway) is the fallback.
 enum Source { SRC_NONE, SRC_WIFI, SRC_BLE };
@@ -134,6 +139,11 @@ static const char* PHOTO_UA =
     "flight-radar-esp32/1.0 (+https://github.com/disclaimer8/flight-radar-esp32)";
 PhotoSlot g_photoCache[PHOTO_CACHE_SLOTS];
 std::map<std::string, bool> g_photoMiss;  // negative cache (known no-photo), per boot
+
+// Persistent download scratch: avoids interleaving transient 150 KB
+// allocations with the permanent 115 KB photo slots (PSRAM fragmentation).
+static const size_t PHOTO_DL_MAX = 150 * 1024;
+uint8_t* g_photoDlBuf = nullptr;   // lazily allocated once, never freed
 
 JPEGDEC g_jpeg;
 // JPEGDEC delivers MCU blocks via callback; these route them into the target
@@ -616,19 +626,18 @@ void sendScanResults(const std::vector<ScanNet>& nets) {
     }
 }
 
-// Download a URL into a PSRAM buffer (caller frees). Same TLS pattern as the
-// hexdb lookup; requires Content-Length (planespotters sends it) and caps at
-// maxLen. Returns null on any failure.
-uint8_t* httpsGetToPsram(const char* url, size_t maxLen, size_t* outLen) {
+// Download a URL into a caller-supplied buffer. Same TLS pattern as the hexdb
+// lookup; requires Content-Length (planespotters sends it) and caps at maxLen.
+// Writes into buf (must be at least maxLen bytes) and sets *outLen on success.
+// Returns true on success; never allocates or frees memory.
+bool httpsGetToBuf(const char* url, uint8_t* buf, size_t maxLen, size_t* outLen) {
     WiFiClientSecure client; client.setInsecure();
     HTTPClient http; http.begin(client, url);
     http.setUserAgent(PHOTO_UA);
     http.setConnectTimeout(2500); http.setTimeout(4000);
-    if (http.GET() != 200) { http.end(); return nullptr; }
+    if (http.GET() != 200) { http.end(); return false; }
     int len = http.getSize();
-    if (len <= 0 || (size_t)len > maxLen) { http.end(); return nullptr; }
-    uint8_t* buf = (uint8_t*)heap_caps_malloc(len, MALLOC_CAP_SPIRAM);
-    if (!buf) { http.end(); return nullptr; }
+    if (len <= 0 || (size_t)len > maxLen) { http.end(); return false; }
     WiFiClient* s = http.getStreamPtr();
     size_t got = 0;
     unsigned long t0 = millis();
@@ -637,9 +646,9 @@ uint8_t* httpsGetToPsram(const char* url, size_t maxLen, size_t* outLen) {
         if (n > 0) got += (size_t)n; else delay(10);
     }
     http.end();
-    if (got != (size_t)len) { heap_caps_free(buf); return nullptr; }
+    if (got != (size_t)len) return false;
     *outLen = got;
-    return buf;
+    return true;
 }
 
 // LRU-insert a decoded photo. Eviction can never free the on-screen photo:
@@ -697,18 +706,21 @@ PhotoResult fetchPhoto(const Aircraft& ac) {
         std::string(jsonBody.c_str(), jsonBody.length()));
     if (!meta.ok) { g_photoMiss[key] = true; return res; }  // confirmed no photo
 
+    if (!g_photoDlBuf) {
+        g_photoDlBuf = (uint8_t*)heap_caps_malloc(PHOTO_DL_MAX, MALLOC_CAP_SPIRAM);
+        if (!g_photoDlBuf) return res;
+    }
     size_t ilen = 0;
     // Via the re-encoding proxy: planespotters thumbs are progressive JPEGs,
     // which JPEGDEC can't really decode (see buildProxiedPhotoUrl).
     std::string imgUrl = buildProxiedPhotoUrl(meta.url);
-    uint8_t* ibuf = httpsGetToPsram(imgUrl.c_str(), 150 * 1024, &ilen);
-    if (!ibuf) return res;  // transient network failure: don't negative-cache
+    if (!httpsGetToBuf(imgUrl.c_str(), g_photoDlBuf, PHOTO_DL_MAX, &ilen)) return res;  // transient network failure: don't negative-cache
 
     uint16_t* px = (uint16_t*)heap_caps_malloc(240 * 240 * 2, MALLOC_CAP_SPIRAM);
-    if (!px) { heap_caps_free(ibuf); return res; }
+    if (!px) return res;
     std::memset(px, 0, 240 * 240 * 2);  // black letterbox margins
 
-    if (g_jpeg.openRAM(ibuf, (int)ilen, photoDrawCb)) {
+    if (g_jpeg.openRAM(g_photoDlBuf, (int)ilen, photoDrawCb)) {
         int d = pickJpegScale(g_jpeg.getWidth(), g_jpeg.getHeight());
         int opt = (d == 8) ? JPEG_SCALE_EIGHTH
                 : (d == 4) ? JPEG_SCALE_QUARTER
@@ -731,7 +743,6 @@ PhotoResult fetchPhoto(const Aircraft& ac) {
         heap_caps_free(px);
         g_photoMiss[key] = true;
     }
-    heap_caps_free(ibuf);
     return res;
 }
 
@@ -762,6 +773,10 @@ void setup() {
     tft.init();
     tft.setRotation(0);
     tft.fillScreen(TFT_BLACK);
+    // Take over the backlight pin with LEDC PWM (core 2.x API).
+    ledcSetup(0, 5000, 8);          // channel 0, 5 kHz, 8-bit
+    ledcAttachPin(TFT_BL, 0);
+    ledcWrite(0, BL_FULL);
     fb.setColorDepth(16);
     if (!fb.createSprite(240, 240)) Serial.println("sprite alloc failed");
     touch.begin();
@@ -879,6 +894,10 @@ void loop() {
         g_view = RADAR;
         g_photoPx = nullptr;
     }
+
+    // Backlight: dim after a minute of no touches, restore instantly on touch.
+    uint8_t want = (millis() - g_lastTouch >= BL_DIM_MS) ? BL_DIM : BL_FULL;
+    if (want != g_blLevel) { g_blLevel = want; ledcWrite(0, want); }
 
     if (g_view == RADAR) drawRadar();
     else if (g_view == DETAIL) drawDetail();
