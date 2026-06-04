@@ -167,10 +167,15 @@ void netPoll() {
         s_http.setReuse(true);
         s_init = true;
     }
+    // Snapshot the observer location once per cycle: loop() rewrites these
+    // doubles on portal save, and a 64-bit store isn't atomic across cores.
+    // A torn read would only mis-center one poll (self-heals next cycle);
+    // the snapshot at least guarantees the URL and the parse use one pair.
+    double obsLat = g_obsLat, obsLon = g_obsLon;
     char url[160];
     std::snprintf(url, sizeof(url),
         "https://api.airplanes.live/v2/point/%.4f/%.4f/%d",
-        g_obsLat, g_obsLon, queryRadiusNm(kRangePresets[kRangeCount - 1]));
+        obsLat, obsLon, queryRadiusNm(kRangePresets[kRangeCount - 1]));
     s_http.begin(s_client, url);
     s_http.setUserAgent("flight-ticker-esp32");
     s_http.setConnectTimeout(8000);
@@ -180,7 +185,7 @@ void netPoll() {
         String payload = s_http.getString();
         s_http.end();   // setReuse keeps the socket alive
         std::vector<Aircraft> fresh = parseNearest(
-            std::string(payload.c_str()), g_obsLat, g_obsLon,
+            std::string(payload.c_str()), obsLat, obsLon,
             RADAR_PLOT_CAP, HIDE_GROUND_AIRCRAFT);
         Serial.printf("poll ok: %u aircraft\n", (unsigned)fresh.size());
         if (!g_pollReady) {            // loop consumed the previous batch
@@ -273,7 +278,7 @@ void saveLocation(double lat, double lon) {
 }
 
 // Current display range (outer ring) in km, selected by touch zoom. Replaces the
-// old fixed rangeKm(); the API reception radius is separate (see pollApi()).
+// old fixed rangeKm(); the API reception radius is separate (see netPoll()).
 static double displayRangeKm() { return kRangePresets[g_rangeIdx]; }
 
 // The LCD screen shown while the Wi-Fi setup portal is open.
