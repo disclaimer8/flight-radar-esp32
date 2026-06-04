@@ -14,8 +14,15 @@ struct PsPhoto {
 // Extract photos[0].thumbnail_large.src (fallback thumbnail.src) + photographer.
 inline PsPhoto parsePlanespottersPhoto(const std::string& json) {
     PsPhoto r;
+    // Filter like parseNearest does: the raw response can be 5-30 KB and the
+    // parsed doc lands in SRAM heap on-device (next to the sprite + TLS) —
+    // bound it to just the three fields we read.
+    JsonDocument filter;
+    filter["photos"][0]["thumbnail_large"]["src"] = true;
+    filter["photos"][0]["thumbnail"]["src"] = true;
+    filter["photos"][0]["photographer"] = true;
     JsonDocument doc;
-    if (deserializeJson(doc, json)) return r;
+    if (deserializeJson(doc, json, DeserializationOption::Filter(filter))) return r;
     JsonVariantConst photos = doc["photos"];
     if (!photos.is<JsonArrayConst>() || photos.size() == 0) return r;
     JsonVariantConst p = photos[0];
