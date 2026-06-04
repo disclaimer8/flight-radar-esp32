@@ -48,3 +48,13 @@ inline int pickJpegScale(int srcW, int srcH) {
 // Positive = crop that many source px off the leading edge; negative =
 // letterbox margin (image smaller than the screen).
 inline int cropOffset(int scaledDim) { return (scaledDim - 240) / 2; }
+
+// Result returned by fetchPhoto() (defined in flight_ticker.ino).
+// Declared here so that photo_core.h serves as the shared type header and the
+// Arduino .ino preprocessor finds the type before it emits its auto forward
+// declaration for fetchPhoto().
+struct PhotoResult {
+    bool ok = false;
+    uint16_t* px = nullptr;  // 240*240 RGB565 in PSRAM; valid only while cached
+    std::string photographer;
+};
