@@ -145,6 +145,68 @@ std::map<std::string, bool> g_photoMiss;  // negative cache (known no-photo), pe
 static const size_t PHOTO_DL_MAX = 150 * 1024;
 uint8_t* g_photoDlBuf = nullptr;   // lazily allocated once, never freed
 
+// ---- netTask: all outbound HTTP on core 0 (render loop stays on core 1) ----
+// Hand-off = the house volatile-flag pattern: netTask is the only writer of
+// each result buffer, sets the ready flag LAST; loop() consumes at one safe
+// point and clears the flag. Internal SRAM is uncached and per-core stores
+// land in order, same assumption the BLE->loop path has always made.
+
+// Poll channel: netTask parses into its scratch, then swap-publishes here.
+std::vector<Aircraft> g_pollBuf;
+volatile bool g_pollReady = false;
+
+void netPoll() {
+    // Persistent keep-alive client: handshake once (~1.5 s), then each poll
+    // is a bare GET (~200 ms). On any failure tear down so the next cycle
+    // re-handshakes from scratch.
+    static WiFiClientSecure s_client;
+    static HTTPClient s_http;
+    static bool s_init = false;
+    if (!s_init) {
+        s_client.setInsecure();   // public read-only data; no CA pinning
+        s_http.setReuse(true);
+        s_init = true;
+    }
+    char url[160];
+    std::snprintf(url, sizeof(url),
+        "https://api.airplanes.live/v2/point/%.4f/%.4f/%d",
+        g_obsLat, g_obsLon, queryRadiusNm(kRangePresets[kRangeCount - 1]));
+    s_http.begin(s_client, url);
+    s_http.setUserAgent("flight-ticker-esp32");
+    s_http.setConnectTimeout(8000);
+    s_http.setTimeout(8000);
+    int code = s_http.GET();
+    if (code == 200) {
+        String payload = s_http.getString();
+        s_http.end();   // setReuse keeps the socket alive
+        std::vector<Aircraft> fresh = parseNearest(
+            std::string(payload.c_str()), g_obsLat, g_obsLon,
+            RADAR_PLOT_CAP, HIDE_GROUND_AIRCRAFT);
+        Serial.printf("poll ok: %u aircraft\n", (unsigned)fresh.size());
+        if (!g_pollReady) {            // loop consumed the previous batch
+            g_pollBuf.swap(fresh);
+            g_pollReady = true;        // flag last
+        }
+    } else {
+        Serial.printf("poll failed: %d\n", code);
+        s_http.end();
+        s_client.stop();               // force a clean handshake next cycle
+        g_stale = true;                // single-writer note: see Step 3
+    }
+}
+
+void netTask(void*) {
+    unsigned long lastPoll = 0;
+    for (;;) {
+        if (WiFi.status() == WL_CONNECTED &&
+            millis() - lastPoll >= POLL_INTERVAL_MS) {
+            lastPoll = millis();
+            netPoll();
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
+
 JPEGDEC g_jpeg;
 // JPEGDEC delivers MCU blocks via callback; these route them into the target
 // framebuffer with the centering crop offsets (negative = letterbox margin).
@@ -281,38 +343,6 @@ void startPortalOnDemand() {
     setupPortalParams(wm, latParam, lonParam);
     drawSetupScreen();
     wm.startConfigPortal("FlightRadar-Setup");
-}
-
-void pollApi() {
-    // Called only when WiFi is connected (see loop()). No blocking reconnect here.
-
-    char url[160];
-    std::snprintf(url, sizeof(url),
-        "https://api.airplanes.live/v2/point/%.4f/%.4f/%d",
-        g_obsLat, g_obsLon, queryRadiusNm(kRangePresets[kRangeCount - 1]));
-
-    // Cloudflare 301-redirects http->https; talk TLS directly. Public read-only
-    // data, so skip cert validation rather than pin a CA.
-    WiFiClientSecure client;
-    client.setInsecure();
-    HTTPClient http;
-    http.begin(client, url);
-    http.setUserAgent("flight-ticker-esp32");
-    http.setConnectTimeout(8000);
-    http.setTimeout(8000);
-    int code = http.GET();
-    if (code == 200) {
-        String payload = http.getString();
-        g_cache = parseNearest(std::string(payload.c_str()), g_obsLat, g_obsLon, RADAR_PLOT_CAP, HIDE_GROUND_AIRCRAFT);
-        if (g_idx >= g_cache.size()) g_idx = 0;
-        g_centerLat = g_obsLat; g_centerLon = g_obsLon;
-        g_stale = false;
-        Serial.printf("poll ok: %u aircraft\n", (unsigned)g_cache.size());
-    } else {
-        g_stale = true;
-        Serial.printf("poll failed: HTTP %d\n", code);
-    }
-    http.end();
 }
 
 void drawRadar() {
@@ -822,8 +852,9 @@ void setup() {
     tft.drawString("WiFi...", CX, CY, 4);
 
     connectWifi();
-    pollApi();
-    g_lastPoll  = millis();
+    // First poll comes from netTask within ~2 s of boot.
+    xTaskCreatePinnedToCore(netTask, "net", 12288, nullptr, 1, nullptr, 0);
+    g_lastPoll = millis();
     g_lastTouch = millis();
 }
 
@@ -839,6 +870,15 @@ void loop() {
             if (g_idx >= g_cache.size()) g_idx = 0;
             g_bleLastRx = millis();
         }
+    }
+    if (g_pollReady) {
+        g_cache.swap(g_pollBuf);
+        g_pollBuf.clear();
+        g_pollReady = false;           // netTask may publish again now
+        if (g_idx >= g_cache.size()) g_idx = 0;
+        g_centerLat = g_obsLat; g_centerLon = g_obsLon;
+        g_stale = false;
+        g_lastPoll = millis();         // freshness = when applied
     }
     if (g_wifiCfgReady) {
         g_wifiCfgReady = false;
@@ -872,12 +912,8 @@ void loop() {
         }
         // n == WIFI_SCAN_RUNNING (-1): keep waiting
     }
-    // pollApi() blocks up to ~8s (HTTP timeout); the sweep freezes and touches are
-    // ignored for that window. Acceptable on this single-threaded firmware — not a bug.
-    if (now - g_lastPoll >= POLL_INTERVAL_MS) {
-        if (WiFi.status() == WL_CONNECTED) pollApi();   // skip when offline; no blocking reconnect
-        g_lastPoll = now;
-    }
+    // Polling lives on netTask (core 0); g_lastPoll is bumped at consume time
+    // above and only feeds the staleness indicator now.
 
     // Source arbitration: Wi-Fi wins when connected; else BLE if fresh; else nothing.
     // g_bleLastRx != 0 gate keeps BLE dormant until a real packet arrives (at boot
