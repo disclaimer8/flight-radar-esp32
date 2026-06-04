@@ -31,9 +31,13 @@ class IosGatewayDriver {
       // loop running while backgrounded, so the timer keeps firing. Its latest
       // position is also cached and fed to each cycle, so the cycle never blocks
       // on a separate getCurrentPosition (which can stall waiting for a fix).
+      // accuracy=medium + distanceFilter=500 m: the stream is only a keep-alive
+      // and a rough center for a 50 nm query radius — high accuracy wastes GPS
+      // power with no benefit. This is the app's single biggest battery lever.
       _keepAliveSub = Geolocator.getPositionStream(
         locationSettings: AppleSettings(
-          accuracy: LocationAccuracy.high,
+          accuracy: LocationAccuracy.medium,
+          distanceFilter: 500,
           allowBackgroundLocationUpdates: true,
           pauseLocationUpdatesAutomatically: false,
           showBackgroundLocationIndicator: true,

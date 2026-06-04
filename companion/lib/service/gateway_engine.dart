@@ -86,10 +86,20 @@ class GatewayEngine {
     _fix = '${fix.lat.toStringAsFixed(4)}, ${fix.lon.toStringAsFixed(4)}';
     try {
       final aircraft = await _client.fetchNearby(fix.lat, fix.lon, kRadiusNm);
+      // Parallel route lookups: all callsigns are requested concurrently instead
+      // of awaiting each serially (cold cache with N aircraft = N×RTT → 1×RTT).
+      // RouteClient caches by callsign; duplicate callsigns in one batch may
+      // double-fetch on a cold cache (rare), which is acceptable.
+      final routes = await Future.wait(
+        aircraft.map((a) => _routes.lookup(a.callsign)),
+      );
       final enriched = <Aircraft>[];
-      for (final a in aircraft) {
-        final (o, d) = await _routes.lookup(a.callsign);
-        final dist = haversineKm(fix.lat, fix.lon, a.lat, a.lon);
+      for (var i = 0; i < aircraft.length; i++) {
+        final a = aircraft[i];
+        final (o, d) = routes[i];
+        // Reuse distKm already computed by AirplanesClient (single-pass haversine).
+        // Fall back to computing it here if the client didn't set it (foreign data).
+        final dist = a.distKm ?? haversineKm(fix.lat, fix.lon, a.lat, a.lon);
         var e = a.copyWith(distKm: dist);
         if (o.isNotEmpty) e = e.copyWith(origin: o, dest: d);
         enriched.add(e);

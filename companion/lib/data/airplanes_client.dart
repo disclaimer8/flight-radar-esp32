@@ -38,6 +38,9 @@ List<Aircraft> parseAircraft(String body, double centerLat, double centerLon,
     final bool isEmergency =
         squawk == 7500 || squawk == 7600 || squawk == 7700 || emActive;
 
+    // Compute distance once per aircraft (single-pass haversine: avoids
+    // re-computing trig O(n log n) times inside the sort comparator).
+    final dist = haversineKm(centerLat, centerLon, lat, lon);
     list.add(Aircraft(
       callsign: (item['flight'] as String?)?.trim() ?? '',
       type: (item['t'] as String?)?.trim() ?? '',
@@ -53,11 +56,11 @@ List<Aircraft> parseAircraft(String body, double centerLat, double centerLon,
       desc: desc,
       isMilitary: isMilitary,
       isEmergency: isEmergency,
+      distKm: dist,
     ));
   }
 
-  list.sort((a, b) => haversineKm(centerLat, centerLon, a.lat, a.lon)
-      .compareTo(haversineKm(centerLat, centerLon, b.lat, b.lon)));
+  list.sort((a, b) => a.distKm!.compareTo(b.distKm!));
   if (list.length > bleMaxAircraft) list.removeRange(bleMaxAircraft, list.length);
   return list;
 }

@@ -112,6 +112,7 @@ class _PhotoBoxState extends State<_PhotoBox> {
             children: [
               Expanded(
                 child: Image.network(photo.thumbUrl, fit: BoxFit.cover,
+                    cacheWidth: 160, // decode at ~2x box size, not full source res
                     errorBuilder: (_, _, _) => Container(
                         color: Colors.black12,
                         child: const Icon(Icons.flight, color: Colors.black38))),
