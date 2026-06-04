@@ -11,8 +11,10 @@
 #include "coord_core.h"
 #include "wifi_config_core.h"
 #include "wifi_scan_core.h"
+#include "photo_core.h"
 #include "cst816s.h"
 #include <NimBLEDevice.h>
+#include <JPEGDEC.h>
 #include "ble_core.h"
 #include <map>
 #include <Preferences.h>
@@ -46,9 +48,11 @@ double        g_centerLat = MY_LAT;   // radar center: config in Wi-Fi mode, pac
 double        g_centerLon = MY_LON;
 unsigned long g_bleLastRx = 0;        // millis of last accepted BLE packet
 
-enum View { RADAR, DETAIL };
+enum View { RADAR, DETAIL, PHOTO };
 View    g_view = RADAR;
 size_t  g_idx  = 0;
+uint16_t*   g_photoPx = nullptr;   // cache-owned; valid only in PHOTO view
+std::string g_photoCredit;
 int g_rangeIdx = 1;  // index into kRangePresets; default 50 km. Restored from NVS in setup().
 double g_obsLat = MY_LAT;  // observer location; default from config.h, restored from NVS in setup()
 double g_obsLon = MY_LON;
@@ -114,6 +118,40 @@ class WifiScanCallbacks : public NimBLECharacteristicCallbacks {
             g_wifiScanRequested = true;
     }
 };
+
+// ---- Aircraft photo pipeline (PHOTO view) ----------------------------------
+// Decoded 240x240 RGB565 photos live in PSRAM (2 MB, otherwise idle): 8 LRU
+// slots ≈ 920 KB + a transient download buffer. SRAM budget is untouched.
+struct PhotoSlot {
+    std::string key;            // registration, or hex when reg is empty
+    uint16_t*   px = nullptr;   // 240*240 RGB565 in PSRAM; null = free slot
+    std::string photographer;
+    unsigned long lastUse = 0;
+};
+static const int PHOTO_CACHE_SLOTS = 8;
+PhotoSlot g_photoCache[PHOTO_CACHE_SLOTS];
+std::map<std::string, bool> g_photoMiss;  // negative cache (known no-photo), per boot
+
+JPEGDEC g_jpeg;
+// JPEGDEC delivers MCU blocks via callback; these route them into the target
+// framebuffer with the centering crop offsets (negative = letterbox margin).
+uint16_t* g_decTarget = nullptr;
+int g_decOffX = 0, g_decOffY = 0;
+
+int photoDrawCb(JPEGDRAW* d) {
+    for (int row = 0; row < d->iHeight; row++) {
+        int ty = d->y + row - g_decOffY;
+        if (ty < 0 || ty >= 240) continue;
+        // iWidth is the buffer stride; iWidthUsed excludes stale columns on
+        // right-edge MCU blocks (visible in the letterboxed case).
+        for (int col = 0; col < d->iWidthUsed; col++) {
+            int tx = d->x + col - g_decOffX;
+            if (tx < 0 || tx >= 240) continue;
+            g_decTarget[ty * 240 + tx] = d->pPixels[row * d->iWidth + col];
+        }
+    }
+    return 1;
+}
 
 std::map<std::string, std::pair<std::string, std::string>> g_routeCache; // callsign -> (origin,dest)
 
@@ -427,6 +465,61 @@ void drawDetail() {
     fb.pushSprite(0, 0);
 }
 
+// Centered one-liner shown for ~1.2 s (blocking — same one-shot acceptance as
+// the photo fetch itself), then the next frame redraws the current view.
+void flashPhotoMsg(const char* msg) {
+    fb.fillSprite(TFT_BLACK);
+    fb.setTextDatum(MC_DATUM);
+    fb.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    fb.drawString(msg, CX, CY, 2);
+    fb.pushSprite(0, 0);
+    delay(1200);
+}
+
+// Swipe-up handler in DETAIL: fetch (or cache-hit) the photo and switch view.
+// Failure paths flash a message and stay in DETAIL.
+void enterPhotoView() {
+    if (g_cache.empty()) return;
+    if (g_idx >= g_cache.size()) g_idx = 0;
+    const Aircraft& ac = g_cache[g_idx];
+    if (WiFi.status() != WL_CONNECTED) { flashPhotoMsg("No Wi-Fi"); return; }
+    fb.fillSprite(TFT_BLACK);
+    fb.setTextDatum(MC_DATUM);
+    fb.setTextColor(TFT_CYAN, TFT_BLACK);
+    fb.drawString("Loading photo...", CX, CY, 2);
+    fb.pushSprite(0, 0);
+    PhotoResult r = fetchPhoto(ac);
+    if (!r.ok) { flashPhotoMsg("No photo"); return; }
+    g_photoPx = r.px;
+    g_photoCredit = r.photographer;
+    g_view = PHOTO;
+}
+
+void drawPhoto() {
+    if (!g_photoPx) { g_view = DETAIL; drawDetail(); return; }
+    // JPEGDEC emits little-endian RGB565; pushImage wants swapped bytes.
+    // (If hardware smoke shows red/blue swapped, flip this to false.)
+    fb.setSwapBytes(true);
+    fb.pushImage(0, 0, 240, 240, g_photoPx);
+    fb.setSwapBytes(false);
+    if (g_idx >= g_cache.size()) g_idx = 0;
+    if (!g_cache.empty()) {
+        const Aircraft& ac = g_cache[g_idx];
+        std::string cs = ac.callsign.empty() ? "------" : ac.callsign;
+        fb.setTextDatum(TC_DATUM);
+        fb.setTextColor(TFT_WHITE, TFT_BLACK);
+        fb.drawString(cs.c_str(), CX, 28, 2);
+    }
+    if (!g_photoCredit.empty()) {
+        // GLCD font 1 has no '©'; "(c)" keeps the required attribution ASCII.
+        fb.setTextDatum(BC_DATUM);
+        fb.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+        fb.drawString(("(c) " + g_photoCredit + " / planespotters.net").c_str(),
+                      CX, 214, 1);
+    }
+    fb.pushSprite(0, 0);
+}
+
 void handleTouch() {
     // Only touch the I2C bus when the ISR latched an INT edge (a real touch event).
     // Idle: no edge -> no bus read -> radar stays smooth. One edge per touch also
@@ -451,14 +544,19 @@ void handleTouch() {
         } else if (g == TG_LONG) {              // long-press: reopen Wi-Fi setup portal
             startPortalOnDemand();
         }
-    } else { // DETAIL
+    } else if (g_view == DETAIL) {
         if (g == TG_LEFT && !g_cache.empty()) {
             g_idx = (g_idx + 1) % g_cache.size();
         } else if (g == TG_RIGHT && !g_cache.empty()) {
             g_idx = (g_idx + g_cache.size() - 1) % g_cache.size();
+        } else if (g == TG_UP) {
+            enterPhotoView();
         } else if (g == TG_CLICK || g == TG_DOWN) {
             g_view = RADAR;
         }
+    } else { // PHOTO: any touch returns to the detail page
+        g_view = DETAIL;
+        g_photoPx = nullptr;   // cache still owns the pixels
     }
 }
 
@@ -494,6 +592,110 @@ void sendScanResults(const std::vector<ScanNet>& nets) {
         g_wifiScanChar->notify();
         delay(20);   // pace notifies so the central's queue keeps up
     }
+}
+
+// Download a URL into a PSRAM buffer (caller frees). Same TLS pattern as the
+// hexdb lookup; requires Content-Length (planespotters sends it) and caps at
+// maxLen. Returns null on any failure.
+uint8_t* httpsGetToPsram(const char* url, size_t maxLen, size_t* outLen) {
+    WiFiClientSecure client; client.setInsecure();
+    HTTPClient http; http.begin(client, url);
+    // planespotters 403s generic UAs — must be descriptive with a contact URL
+    http.setUserAgent("flight-radar-esp32/1.0 (+https://github.com/disclaimer8/flight-radar-esp32)");
+    http.setConnectTimeout(2500); http.setTimeout(4000);
+    if (http.GET() != 200) { http.end(); return nullptr; }
+    int len = http.getSize();
+    if (len <= 0 || (size_t)len > maxLen) { http.end(); return nullptr; }
+    uint8_t* buf = (uint8_t*)heap_caps_malloc(len, MALLOC_CAP_SPIRAM);
+    if (!buf) { http.end(); return nullptr; }
+    WiFiClient* s = http.getStreamPtr();
+    size_t got = 0;
+    unsigned long t0 = millis();
+    while (got < (size_t)len && millis() - t0 < 8000) {
+        int n = s->read(buf + got, (size_t)len - got);
+        if (n > 0) got += (size_t)n; else delay(10);
+    }
+    http.end();
+    if (got != (size_t)len) { heap_caps_free(buf); return nullptr; }
+    *outLen = got;
+    return buf;
+}
+
+// LRU-insert a decoded photo. Eviction can never free the on-screen photo:
+// fetches only happen on PHOTO entry, and the entering photo gets the
+// freshest lastUse.
+void photoCacheInsert(const std::string& key, uint16_t* px, const std::string& photographer) {
+    PhotoSlot* slot = nullptr;
+    for (auto& s : g_photoCache) if (!s.px) { slot = &s; break; }
+    if (!slot) {
+        slot = &g_photoCache[0];
+        for (auto& s : g_photoCache) if (s.lastUse < slot->lastUse) slot = &s;
+        heap_caps_free(slot->px);
+    }
+    slot->key = key; slot->px = px;
+    slot->photographer = photographer; slot->lastUse = millis();
+}
+
+// Blocking lookup+fetch+decode (~1-3 s) — deliberate one-shot user action,
+// same acceptance as the 12 s provisioning block. Cache hits return instantly.
+PhotoResult fetchPhoto(const Aircraft& ac) {
+    PhotoResult res;
+    std::string key = !ac.registration.empty() ? ac.registration : ac.hex;
+    if (key.empty()) return res;
+
+    for (auto& s : g_photoCache) {
+        if (s.px && s.key == key) {
+            s.lastUse = millis();
+            res.ok = true; res.px = s.px; res.photographer = s.photographer;
+            return res;
+        }
+    }
+    if (g_photoMiss.count(key)) return res;
+
+    char url[160];
+    const char* kind = !ac.registration.empty() ? "reg" : "hex";
+    std::snprintf(url, sizeof(url),
+                  "https://api.planespotters.net/pub/photos/%s/%s", kind, key.c_str());
+    size_t jlen = 0;
+    uint8_t* jbuf = httpsGetToPsram(url, 32 * 1024, &jlen);
+    if (!jbuf) { g_photoMiss[key] = true; return res; }
+    PsPhoto meta = parsePlanespottersPhoto(std::string((char*)jbuf, jlen));
+    heap_caps_free(jbuf);
+    if (!meta.ok) { g_photoMiss[key] = true; return res; }
+
+    size_t ilen = 0;
+    uint8_t* ibuf = httpsGetToPsram(meta.url.c_str(), 150 * 1024, &ilen);
+    if (!ibuf) return res;  // transient network failure: don't negative-cache
+
+    uint16_t* px = (uint16_t*)heap_caps_malloc(240 * 240 * 2, MALLOC_CAP_SPIRAM);
+    if (!px) { heap_caps_free(ibuf); return res; }
+    std::memset(px, 0, 240 * 240 * 2);  // black letterbox margins
+
+    if (g_jpeg.openRAM(ibuf, (int)ilen, photoDrawCb)) {
+        int d = pickJpegScale(g_jpeg.getWidth(), g_jpeg.getHeight());
+        int opt = (d == 8) ? JPEG_SCALE_EIGHTH
+                : (d == 4) ? JPEG_SCALE_QUARTER
+                : (d == 2) ? JPEG_SCALE_HALF : 0;
+        g_decTarget = px;
+        g_decOffX = cropOffset(g_jpeg.getWidth() / d);
+        g_decOffY = cropOffset(g_jpeg.getHeight() / d);
+        g_jpeg.setPixelType(RGB565_LITTLE_ENDIAN);
+        int ok = g_jpeg.decode(0, 0, opt);
+        g_jpeg.close();
+        g_decTarget = nullptr;
+        if (ok) {
+            photoCacheInsert(key, px, meta.photographer);
+            res.ok = true; res.px = px; res.photographer = meta.photographer;
+        } else {
+            heap_caps_free(px);
+            g_photoMiss[key] = true;  // undecodable image: don't retry each tap
+        }
+    } else {
+        heap_caps_free(px);
+        g_photoMiss[key] = true;
+    }
+    heap_caps_free(ibuf);
+    return res;
 }
 
 // Apply a received Wi-Fi provisioning packet: parse, join, persist, report.
@@ -633,9 +835,14 @@ void loop() {
     else                                                               g_source = SRC_NONE;
 
     handleTouch();
-    if (g_view == DETAIL && now - g_lastTouch >= IDLE_RETURN_MS) g_view = RADAR;
+    if (g_view != RADAR && now - g_lastTouch >= IDLE_RETURN_MS) {
+        g_view = RADAR;
+        g_photoPx = nullptr;
+    }
 
-    if (g_view == RADAR) drawRadar(); else drawDetail();
+    if (g_view == RADAR) drawRadar();
+    else if (g_view == DETAIL) drawDetail();
+    else drawPhoto();
     delay(16); // ~60 fps cap
 }
 #endif // ARDUINO

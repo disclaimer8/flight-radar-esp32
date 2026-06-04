@@ -5,6 +5,7 @@
 #include "../../src/wifi_config_core.h"
 #include "../../src/wifi_scan_core.h"
 #include "../../src/ble_core.h"
+#include "../../src/photo_core.h"
 #include <cstring>
 
 static const char* SAMPLE_JSON =
@@ -600,6 +601,12 @@ void test_wifi_scan_empty_encode() {
     TEST_ASSERT_EQUAL_HEX8(0, buf[3]);   // total=0 → none found
 }
 
+void test_parse_nearest_hex(void) {
+    auto list = parseNearest(SAMPLE_JSON, 48.0, 11.0, 5);
+    TEST_ASSERT_EQUAL_UINT32(3, list.size());
+    TEST_ASSERT_EQUAL_STRING("3c6abc", list[0].hex.c_str());  // nearest = DLH4AB
+}
+
 void test_wifi_scan_dedup_sort_cap() {
     std::vector<ScanNet> in = {
         {"B", -80, true}, {"A", -60, false}, {"B", -50, true}, {"", -10, false},
@@ -614,6 +621,47 @@ void test_wifi_scan_dedup_sort_cap() {
     for (int i = 0; i < 20; i++)
         many.push_back({"n" + std::to_string(i), (int8_t)(-30 - i), false});
     TEST_ASSERT_EQUAL(15, dedupSortCap(many).size());    // capped
+}
+
+void test_parse_planespotters_photo(void) {
+    // happy path: thumbnail_large preferred
+    const char* ok =
+      "{\"photos\":[{\"id\":\"1\",\"thumbnail\":{\"src\":\"https://t/small.jpg\"},"
+      "\"thumbnail_large\":{\"src\":\"https://t/large.jpg\"},"
+      "\"photographer\":\"Jane Doe\"}]}";
+    PsPhoto p = parsePlanespottersPhoto(ok);
+    TEST_ASSERT_TRUE(p.ok);
+    TEST_ASSERT_EQUAL_STRING("https://t/large.jpg", p.url.c_str());
+    TEST_ASSERT_EQUAL_STRING("Jane Doe", p.photographer.c_str());
+
+    // fallback to thumbnail when thumbnail_large absent
+    const char* fbk =
+      "{\"photos\":[{\"thumbnail\":{\"src\":\"https://t/small.jpg\"},"
+      "\"photographer\":\"X\"}]}";
+    PsPhoto pf = parsePlanespottersPhoto(fbk);
+    TEST_ASSERT_TRUE(pf.ok);
+    TEST_ASSERT_EQUAL_STRING("https://t/small.jpg", pf.url.c_str());
+}
+
+void test_parse_planespotters_photo_misses(void) {
+    TEST_ASSERT_FALSE(parsePlanespottersPhoto("{\"photos\":[]}").ok);   // no photos
+    TEST_ASSERT_FALSE(parsePlanespottersPhoto("{}").ok);                // no key
+    TEST_ASSERT_FALSE(parsePlanespottersPhoto("not json").ok);          // malformed
+    TEST_ASSERT_FALSE(parsePlanespottersPhoto(
+        "{\"photos\":[{\"photographer\":\"X\"}]}").ok);                 // no src at all
+}
+
+void test_pick_jpeg_scale_and_crop(void) {
+    // largest divisor d in {1,2,4,8} with srcW/d>=240 AND srcH/d>=240, else 1
+    TEST_ASSERT_EQUAL(1, pickJpegScale(400, 267));    // 1/2 would undershoot 240
+    TEST_ASSERT_EQUAL(2, pickJpegScale(960, 640));
+    TEST_ASSERT_EQUAL(4, pickJpegScale(2000, 1500));
+    TEST_ASSERT_EQUAL(8, pickJpegScale(4000, 3000));
+    TEST_ASSERT_EQUAL(1, pickJpegScale(200, 150));    // undersized -> letterbox
+    // centering offsets (can be negative for letterbox)
+    TEST_ASSERT_EQUAL(80, cropOffset(400));    // (400-240)/2
+    TEST_ASSERT_EQUAL(0, cropOffset(240));
+    TEST_ASSERT_EQUAL(-20, cropOffset(200));   // centers an undersized image
 }
 
 void setUp(void) {}
@@ -677,5 +725,9 @@ int main(int, char **) {
     RUN_TEST(test_wifi_scan_record_encode);
     RUN_TEST(test_wifi_scan_empty_encode);
     RUN_TEST(test_wifi_scan_dedup_sort_cap);
+    RUN_TEST(test_parse_nearest_hex);
+    RUN_TEST(test_parse_planespotters_photo);
+    RUN_TEST(test_parse_planespotters_photo_misses);
+    RUN_TEST(test_pick_jpeg_scale_and_crop);
     return UNITY_END();
 }

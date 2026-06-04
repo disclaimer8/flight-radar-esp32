@@ -27,6 +27,14 @@ CST816S capacitive touch, ESP32-S3R2).
   **Operator** (3-letter airline ICAO derived from the callsign), and **Route**
   (origin → dest, e.g. `EGLL > KJFK` — from the BLE packet when present, else a
   lazy cached hexdb.io lookup on Wi-Fi). Page dots navigate between aircraft.
+  **Swipe up** (Wi-Fi only) opens the **Photo view** for the selected aircraft.
+- **Photo view** (swipe up from detail, Wi-Fi only) — fetches a real photo from
+  [planespotters.net](https://planespotters.net) by registration (falls back to
+  hex), JPEG-decodes it into the 240×240 round display (scale + center-crop via
+  `photo_core.h`), and stores up to 8 photos in a PSRAM LRU cache across detail
+  page switches. A `(c) photographer / planespotters.net` attribution line overlays
+  the bottom. Any touch exits back to the detail view; idle for 15 s returns to
+  the radar. Shows **"No Wi-Fi"** when the device is in BLE-only mode.
 - **Source indicator** (bottom-center): green **W** = Wi-Fi live, red **W** =
   Wi-Fi up but the API poll is failing, cyan **B** = data coming over BLE from a
   phone, red **NO LINK** = no fresh data from either source.
@@ -40,8 +48,11 @@ CST816S capacitive touch, ESP32-S3R2).
 | Swipe down (on radar) | Zoom out — switch to next larger range preset |
 | Long-press (on radar) | Open the Wi-Fi setup captive portal |
 | Swipe left / right (in detail) | Next / previous aircraft |
+| Swipe up (in detail) | Open photo view for the selected aircraft (Wi-Fi only) |
 | Tap or swipe down (in detail) | Back to radar |
 | No touch for 15 s (in detail) | Auto-return to radar |
+| Any touch (in photo) | Back to detail |
+| No touch for 15 s (in photo) | Auto-return to radar |
 
 ## Setup
 
@@ -80,9 +91,10 @@ host unit tests under the `native` environment — no hardware needed.
 | `src/coord_core.h` | `parseLatLon` — portal coordinate validation (host-tested) |
 | `src/wifi_config_core.h` | `parseWifiConfig` — BLE Wi-Fi provisioning packet (host-tested) |
 | `src/cst816s.h` | Minimal CST816S touch gesture driver |
-| `src/flight_ticker.ino` | Wi-Fi/HTTP, NimBLE peripheral, TFT_eSPI sprite rendering, touch + radar/detail state machine |
+| `src/photo_core.h` | `parsePlanespottersPhoto` → `PsPhoto{ok,url,photographer}`, `pickJpegScale(srcW,srcH)` → divisor, `cropOffset(scaledDim)` → offset; also the shared `PhotoResult` type (host-tested) |
+| `src/flight_ticker.ino` | Wi-Fi/HTTP, NimBLE peripheral, TFT_eSPI sprite rendering, touch + radar/detail/photo state machine |
 
-`pio test -e native -f test_core` runs the unit tests (56 cases, including the
+`pio test -e native -f test_core` runs the unit tests (60 cases, including the
 BLE packet parser and Wi-Fi scan packet parser). The companion app has its own
 Flutter unit tests: `cd companion && flutter test` (53 cases).
 

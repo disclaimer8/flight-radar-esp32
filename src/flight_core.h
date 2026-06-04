@@ -34,6 +34,7 @@ struct Aircraft {
     double track = NAN;    // true track degrees; NAN if missing
     int    squawk = 0;     // transponder code (e.g. 7700); 0 if missing
     std::string registration; // tail number ("" if missing)
+    std::string hex;          // ICAO24 lowercase ("" if absent; JSON path only)
     std::string origin;       // route origin ICAO ("" if unknown)
     std::string dest;         // route dest ICAO ("" if unknown)
     double lat = 0.0;
@@ -56,6 +57,7 @@ inline std::vector<Aircraft> parseNearest(const std::string& json,
     std::vector<Aircraft> out;
 
     JsonDocument filter;
+    filter["ac"][0]["hex"] = true;
     filter["ac"][0]["flight"] = true;
     filter["ac"][0]["t"] = true;
     filter["ac"][0]["alt_baro"] = true;
@@ -73,6 +75,7 @@ inline std::vector<Aircraft> parseNearest(const std::string& json,
 
     for (JsonObject a : doc["ac"].as<JsonArray>()) {
         Aircraft ac;
+        ac.hex      = trimStr(a["hex"].as<const char*>());
         ac.callsign = trimStr(a["flight"].as<const char*>());
         ac.type     = trimStr(a["t"].as<const char*>());
         if (a["alt_baro"].is<const char*>()) {

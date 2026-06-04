@@ -29,14 +29,15 @@ state machine that ties them together.
 ### `src/flight_core.h` — data (pure, Arduino-free)
 - `struct Aircraft` — callsign, type, altitude (ft), on-ground flag, ground
   speed (kt), `track` (true heading, degrees), `squawk` (transponder code),
-  `registration` (tail number), `origin` (route origin ICAO), `dest` (route
-  dest ICAO), lat/lon, and `distKm` (filled during parse).
+  `registration` (tail number), `hex` (ICAO24 hex address), `origin` (route
+  origin ICAO), `dest` (route dest ICAO), lat/lon, and `distKm` (filled during
+  parse).
 - `parseNearest(json, myLat, myLon, maxN, hideGround)` — parses the
   airplanes.live response with an ArduinoJson filter (only the fields we use,
-  including `track`, `squawk`, and `r` for registration), computes great-circle
-  distance to each aircraft via `haversineKm`, sorts nearest-first, and caps to
-  `maxN`. With `hideGround` set it drops on-ground aircraft before the sort/cap.
-  Returns an empty vector on malformed JSON.
+  including `track`, `squawk`, `r` for registration, and `hex`), computes
+  great-circle distance to each aircraft via `haversineKm`, sorts nearest-first,
+  and caps to `maxN`. With `hideGround` set it drops on-ground aircraft before
+  the sort/cap. Returns an empty vector on malformed JSON.
 - Unit helpers `ftToM`, `ktToKmh`.
 
 ### `src/render_core.h` — presentation math (pure, Arduino-free, host-tested)
@@ -64,11 +65,12 @@ state machine that ties them together.
   in NM, used to build the airplanes.live URL).
 
 Keeping these pure is what makes the project testable: see
-`test/test_core/test_main.cpp` (56 cases — cardinal bearings, projection
+`test/test_core/test_main.cpp` (60 cases — cardinal bearings, projection
 clamping and off-axis geometry, compass rounding boundaries, formatter edge
 cases, vector/altitude-band/emergency-squawk helpers, the parse/sort/distance
-tests, the BLE packet parser, range-zoom helpers, route/airline-code helpers,
-coord/wifi-config parsers, and wifi-scan request/record packet helpers).
+tests (incl. hex field), the BLE packet parser, range-zoom helpers,
+route/airline-code helpers, coord/wifi-config parsers, wifi-scan
+request/record packet helpers, and photo_core helpers).
 
 ### `src/coord_core.h` — coordinate validation (pure, Arduino-free, host-tested)
 - `parseLatLon(latStr, lonStr, &lat, &lon)` — validates two C-string coordinates
@@ -84,6 +86,31 @@ coord/wifi-config parsers, and wifi-scan request/record packet helpers).
   `ssidLen` (1–32) + ssid bytes, `passLen` (0–63) + pass bytes. Returns
   `ok = false` on wrong magic/version, zero or oversized SSID length, oversized
   pass length, or a truncated buffer.
+
+### `src/photo_core.h` — photo JSON parse + scale/crop math (pure, Arduino-free, host-tested)
+- `parsePlanespottersPhoto(json)` → `PsPhoto{ok, url, photographer}` — parses
+  the planespotters.net API response and returns a struct with the JPEG URL of
+  the first result and the photographer name required for attribution (`ok =
+  false` on failure or empty result set). A descriptive `User-Agent` header is
+  mandatory on the calling side — the API returns HTTP 403 for generic or empty
+  UAs.
+- `pickJpegScale(srcW, srcH)` → scale divisor `{1, 2, 4, 8}` — selects the
+  largest JPEGDEC integer divisor whose scaled image still covers the 240×240
+  target on both axes (used to minimise decode memory without under-sampling).
+  The 240 px target is hardcoded.
+- `cropOffset(scaledDim)` → `int` — centering offset for one scaled dimension
+  onto the 240 px target. Positive = crop that many source pixels off the
+  leading edge; negative = letterbox margin. Called once per axis.
+- `struct PhotoResult` — `{ok, px, photographer}` — the type returned by
+  `fetchPhoto()` (defined in `flight_ticker.ino`); declared here so the Arduino
+  preprocessor sees the type before the auto-forward-declaration it emits for
+  `fetchPhoto()`.
+
+The **PSRAM 8-slot LRU cache** (registration-or-hex keyed), **per-boot negative
+cache** (also keyed by registration-or-hex), **JPEGDEC streaming decode**, and
+**HTTPS fetch** all live in `flight_ticker.ino` and are **not** host-tested.
+The blocking 1–3 s fetch+decode runs on the main thread inside `loop()`;
+Wi-Fi-only mode suppresses the fetch entirely ("No Wi-Fi" shown).
 
 ### `src/ble_core.h` — BLE wire protocol + parser (pure, Arduino-free, host-tested)
 - `parseBlePacket(buf, len, maxN, hideGround)` → `BlePacket` — decodes one
@@ -112,17 +139,20 @@ the gesture register (`0x01`) and exposes a `TouchGesture` enum
   reception radius; `RADIUS_NM` in `config.h` is legacy and unused at runtime.
 - **Rendering** — a full-screen 240×240 `TFT_eSprite` is the framebuffer; every
   frame is drawn into the sprite and `pushSprite`'d in one shot (no flicker).
-  `drawRadar()` and `drawDetail()` are the two renderers. `drawRadar()` colors
-  each blip by `altBand()` (via the `kAltColors` table), draws a `vectorEnd()`
-  heading line, rings + labels the nearest aircraft in white, and — for any
-  `isEmergencySquawk()` aircraft — blinks it red and shows an `EMERGENCY <code>`
-  banner. Aircraft beyond the current display range (`isOnRim`) are drawn as
-  small grey rim dots at the correct bearing on the outermost ring. A range
-  readout (e.g. `50km`) draws top-center below the `N` label. `drawDetail()`
-  shows callsign, type + compass direction + squawk, distance, altitude/speed,
-  and a Reg / Op / Route block — registration from the `Aircraft` struct, airline
-  code via `airlineCode(callsign)`, and route origin→dest from either the BLE
-  packet or a lazy cached `hexdb.io` lookup.
+  `drawRadar()`, `drawDetail()`, and `drawPhoto()` are the three renderers.
+  `drawRadar()` colors each blip by `altBand()` (via the `kAltColors` table),
+  draws a `vectorEnd()` heading line, rings + labels the nearest aircraft in
+  white, and — for any `isEmergencySquawk()` aircraft — blinks it red and shows
+  an `EMERGENCY <code>` banner. Aircraft beyond the current display range
+  (`isOnRim`) are drawn as small grey rim dots at the correct bearing on the
+  outermost ring. A range readout (e.g. `50km`) draws top-center below the `N`
+  label. `drawDetail()` shows callsign, type + compass direction + squawk,
+  distance, altitude/speed, and a Reg / Op / Route block — registration from
+  the `Aircraft` struct, airline code via `airlineCode(callsign)`, and route
+  origin→dest from either the BLE packet or a lazy cached `hexdb.io` lookup.
+  `drawPhoto()` copies a cached 240×240 RGB565 framebuffer from PSRAM directly
+  to the sprite and overlays the attribution line at the bottom; if the photo is
+  not yet in cache it triggers a blocking fetch+decode cycle.
 - **Touch** — a falling-edge ISR latches INT events; `handleTouch()` reads the
   gesture once per event with a 300 ms debounce (see Hardware notes for why).
 - **BLE ingest** — a NimBLE peripheral (`IngestCallbacks::onWrite`) receives
@@ -358,9 +388,12 @@ harness.
 ```
               tap
  RADAR ──────────────────────────────────►  DETAIL
-   ▲    swipe up   = zoom in                   │
-   │    swipe down = zoom out                  │ swipe-left  → next aircraft
-   │    long-press = Wi-Fi portal              │ swipe-right → previous (wraps)
+   ▲    swipe up   = zoom in                   │  ▲
+   │    swipe down = zoom out                  │  │ swipe-up (Wi-Fi only)
+   │    long-press = Wi-Fi portal              │  ▼
+   │                                         PHOTO
+   │  tap / swipe-down / 15 s idle             │ swipe-left  → next aircraft
+   │  (also from PHOTO: any touch / 15 s idle) │ swipe-right → previous (wraps)
    │                                           │ (g_idx cycles through g_cache)
    │  tap / swipe-down / 15 s idle             │
    └───────────────────────────────────────── ─┘
@@ -374,7 +407,16 @@ harness.
 - **DETAIL**: one aircraft (callsign, type + compass arrow + squawk, distance,
   altitude/speed, registration, operator airline code, route origin→dest) with
   page dots. Auto-returns to RADAR after 15 s of no touch, and bounces back
-  immediately if the list becomes empty.
+  immediately if the list becomes empty. Swipe up (Wi-Fi only) enters PHOTO.
+- **PHOTO**: shows a planespotters.net photo for the current aircraft with a
+  `(c) photographer / planespotters.net` attribution overlay. On entry,
+  `fetchPhoto()` (in `flight_ticker.ino`) is called: it checks the 8-slot PSRAM
+  LRU cache (keyed by registration, or hex when registration is absent) for an
+  instant hit; on a miss it runs a blocking HTTPS fetch + JPEGDEC decode (1–3 s,
+  loading indicator shown), using `parsePlanespottersPhoto` from `photo_core.h`
+  to extract the URL and photographer from the API JSON. Any touch returns to
+  DETAIL; idle for 15 s returns directly to RADAR. In BLE mode (no Wi-Fi) a
+  `"No Wi-Fi"` message is shown instead and swipe-up from DETAIL is suppressed.
 
 ## Configuration
 
