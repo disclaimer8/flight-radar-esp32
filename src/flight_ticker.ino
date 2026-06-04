@@ -472,11 +472,12 @@ void drawDetail() {
 }
 
 // Blocking sections (photo fetch, message flash) accumulate touch-INT edges
-// from the same gesture (finger lift, CST816S event bursts); drain them so
-// stale events don't replay afterwards and instantly kick the view around.
+// from the same gesture (finger lift, CST816S event bursts); drop the latched
+// flag and restart the debounce window so stale events don't replay. Don't
+// touch the I2C bus here — the CST816S sleeps between touches and a read
+// outside an INT window fails with Wire error -1.
 void drainTouch() {
     g_touchEvent = false;
-    touch.readGesture();          // clears the chip's latched gesture too
     g_lastTouch = millis();
 }
 
@@ -897,7 +898,10 @@ void loop() {
     else                                                               g_source = SRC_NONE;
 
     handleTouch();
-    if (g_view != RADAR && now - g_lastTouch >= IDLE_RETURN_MS) {
+    // Fresh millis() here: handleTouch can block for seconds (photo fetch),
+    // making the loop-start `now` OLDER than g_lastTouch — the unsigned
+    // subtraction then wraps to ~2^32 and fires the idle return instantly.
+    if (g_view != RADAR && millis() - g_lastTouch >= IDLE_RETURN_MS) {
         g_view = RADAR;
         g_photoPx = nullptr;
     }
