@@ -91,6 +91,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _toggle() async {
+    // Single-central peripheral: never start the feeder while a scan or
+    // provisioning BLE session holds the device.
+    if (_provisioning || _scanning) return;
     if (_running) {
       await _controller.stop();
       setState(() => _running = false);
@@ -112,7 +115,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _sendWifi() async {
     // _scanning guard: scan and provisioning are separate BLE sessions racing
     // for the same single-central peripheral — never run both.
-    if (_ssidCtrl.text.isEmpty || _provisioning || _scanning) return;
+    if (_ssidCtrl.text.isEmpty || _running || _provisioning || _scanning) return;
     if (!await _requestBlePermissions()) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -207,7 +210,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton(
-                      onPressed: _toggle,
+                      onPressed: (_provisioning || _scanning) ? null : _toggle,
                       child: Text(_running ? 'Stop' : 'Start feeding device'),
                     ),
                   ),
