@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import '../data/aircraft.dart';
@@ -71,18 +70,6 @@ class _AircraftDetailSheetState extends State<AircraftDetailSheet> {
   late final Future<PhotoRef?> _photo = widget.photos
       .lookup(reg: widget.aircraft.registration ?? '', hex: widget.aircraft.hex);
 
-  // Keep the frame scheduler active so that stream-driven setState calls are
-  // reflected in the very next tester.pump() call (the stream listener fires
-  // as a microtask inside pump; having a pending frame ensures the flush +
-  // draw happen in the same pump rather than requiring a second one).
-  void _scheduleNextFrame() {
-    SchedulerBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      SchedulerBinding.instance.scheduleFrame();
-      _scheduleNextFrame();
-    });
-  }
-
   @override
   void initState() {
     super.initState();
@@ -108,7 +95,6 @@ class _AircraftDetailSheetState extends State<AircraftDetailSheet> {
         }
       });
     });
-    _scheduleNextFrame();
   }
 
   @override

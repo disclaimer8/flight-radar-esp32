@@ -70,14 +70,18 @@ void main() {
     await tester.pump();
 
     // Same hex, new distance → field updates.
+    // Two pumps: first delivers the broadcast-stream event (microtask) and
+    // calls setState; second renders the scheduled rebuild.
     status.add(GatewayStatus(
         aircraft: [full.copyWith(distKm: 9.9)], fix: '51.0000, -0.5000'));
+    await tester.pump();
     await tester.pump();
     expect(find.text('9.9 km'), findsOneWidget);
     expect(find.textContaining('Signal lost'), findsNothing);
 
     // Aircraft gone from the feed → banner, last data retained.
     status.add(const GatewayStatus(aircraft: []));
+    await tester.pump();
     await tester.pump();
     expect(find.textContaining('Signal lost'), findsOneWidget);
     expect(find.text('BAW117'), findsOneWidget);
