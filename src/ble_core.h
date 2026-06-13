@@ -22,6 +22,7 @@ constexpr uint8_t BLE_FLAG_ALT_VALID = 0x02;
 constexpr uint8_t BLE_FLAG_GS_VALID  = 0x04;
 constexpr uint8_t BLE_FLAG_TRACK_VALID  = 0x08;
 constexpr uint8_t BLE_FLAG_SQUAWK_VALID = 0x10;
+constexpr uint8_t BLE_FLAG_MILITARY     = 0x20;
 
 struct BlePacket {
     bool   ok = false;
@@ -79,6 +80,7 @@ inline BlePacket parseBlePacket(const uint8_t* buf, size_t len, size_t maxN, boo
         std::memcpy(&squawk, r + 30, 2);
         ac.track  = (flags & BLE_FLAG_TRACK_VALID)  ? (double)track : NAN;
         ac.squawk = (flags & BLE_FLAG_SQUAWK_VALID) ? (int)squawk   : 0;
+        ac.isMilitary = (flags & BLE_FLAG_MILITARY) != 0;
         ac.registration = bleField(r + 32, 8);
         ac.origin       = bleField(r + 40, 4);
         ac.dest         = bleField(r + 44, 4);

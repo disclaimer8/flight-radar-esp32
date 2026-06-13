@@ -15,6 +15,7 @@ const int bleFlagAltValid = 0x02;
 const int bleFlagGsValid = 0x04;
 const int bleFlagTrackValid = 0x08;
 const int bleFlagSquawkValid = 0x10;
+const int bleFlagMilitary = 0x20;
 
 /// Encode one packet: 12-byte header + up to 10 × 48-byte records.
 /// Records beyond 10 are dropped (the caller passes them nearest-first).
@@ -45,6 +46,7 @@ Uint8List encodePacket(double centerLat, double centerLon, List<Aircraft> aircra
     if (a.gsKt != null) flags |= bleFlagGsValid;
     if (a.track != null) flags |= bleFlagTrackValid;
     if (a.squawk != null) flags |= bleFlagSquawkValid;
+    if (a.isMilitary) flags |= bleFlagMilitary;
     out[base + 26] = flags;
     out[base + 27] = 0; // pad
     bd.setInt16(base + 28, a.track?.round() ?? 0, Endian.little);

@@ -7,9 +7,10 @@ Aircraft _ac({
   String cs = 'AAA', String ty = 'A320',
   double lat = 0, double lon = 0, int? alt = 1000, int? gs = 300, bool ground = false,
   double? track, int? squawk, String? registration, String? origin, String? dest,
+  bool mil = false,
 }) => Aircraft(callsign: cs, type: ty, lat: lat, lon: lon, altFt: alt, gsKt: gs,
     onGround: ground, track: track, squawk: squawk,
-    registration: registration, origin: origin, dest: dest);
+    registration: registration, origin: origin, dest: dest, isMilitary: mil);
 
 void main() {
   test('empty packet is a 12-byte header', () {
@@ -93,5 +94,13 @@ void main() {
     final r = ByteData.sublistView(bytes, 12);
     expect(r.getInt32(20, Endian.little), -1200);
     expect(r.getUint8(26) & bleFlagAltValid, bleFlagAltValid);
+  });
+
+  test('encodePacket sets bleFlagMilitary for military aircraft', () {
+    final bytes = encodePacket(0, 0, [_ac(cs: 'MIL1', ground: false, mil: false)]);
+    expect(bytes[12 + 26] & bleFlagMilitary, 0);
+
+    final bytesMil = encodePacket(0, 0, [_ac(cs: 'MIL1', ground: false, mil: true)]);
+    expect(bytesMil[12 + 26] & bleFlagMilitary, bleFlagMilitary);
   });
 }

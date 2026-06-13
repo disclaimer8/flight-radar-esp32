@@ -607,6 +607,32 @@ void test_parse_nearest_hex(void) {
     TEST_ASSERT_EQUAL_STRING("3c6abc", list[0].hex.c_str());  // nearest = DLH4AB
 }
 
+void test_parse_nearest_military(void) {
+    const char* milJson =
+      "{\"ac\":["
+        "{\"hex\":\"mil123\",\"flight\":\"MIL123  \",\"t\":\"A400\",\"alt_baro\":24000,\"gs\":320,\"lat\":48.10,\"lon\":11.00,\"dbFlags\":1},"
+        "{\"hex\":\"civ123\",\"flight\":\"CIV123  \",\"t\":\"B737\",\"alt_baro\":30000,\"gs\":450,\"lat\":48.20,\"lon\":11.00,\"dbFlags\":0}"
+      "]}";
+    auto list = parseNearest(milJson, 48.0, 11.0, 2);
+    TEST_ASSERT_EQUAL_UINT32(2, list.size());
+    TEST_ASSERT_TRUE(list[0].isMilitary);
+    TEST_ASSERT_FALSE(list[1].isMilitary);
+}
+
+void test_ble_military(void) {
+    std::vector<uint8_t> v = bleHeader(1, 0.0f, 0.0f);
+    bleAddRecord(v, "MIL1", "A400", 0.0f, 0.1f, 15000, 300, BLE_FLAG_ALT_VALID | BLE_FLAG_MILITARY);
+    BlePacket p = parseBlePacket(v.data(), v.size(), 5);
+    TEST_ASSERT_TRUE(p.ok);
+    TEST_ASSERT_TRUE(p.aircraft[0].isMilitary);
+
+    std::vector<uint8_t> v2 = bleHeader(1, 0.0f, 0.0f);
+    bleAddRecord(v2, "CIV1", "B737", 0.0f, 0.1f, 15000, 300, BLE_FLAG_ALT_VALID);
+    BlePacket p2 = parseBlePacket(v2.data(), v2.size(), 5);
+    TEST_ASSERT_TRUE(p2.ok);
+    TEST_ASSERT_FALSE(p2.aircraft[0].isMilitary);
+}
+
 void test_wifi_scan_dedup_sort_cap() {
     std::vector<ScanNet> in = {
         {"B", -80, true}, {"A", -60, false}, {"B", -50, true}, {"", -10, false},
@@ -738,6 +764,8 @@ int main(int, char **) {
     RUN_TEST(test_wifi_scan_empty_encode);
     RUN_TEST(test_wifi_scan_dedup_sort_cap);
     RUN_TEST(test_parse_nearest_hex);
+    RUN_TEST(test_parse_nearest_military);
+    RUN_TEST(test_ble_military);
     RUN_TEST(test_parse_planespotters_photo);
     RUN_TEST(test_parse_planespotters_photo_misses);
     RUN_TEST(test_pick_jpeg_scale_and_crop);

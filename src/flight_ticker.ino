@@ -451,6 +451,7 @@ void drawRadar() {
         }
 
         uint16_t color = kAltColors[altBand(ac.altFt, ac.onGround)];
+        if (ac.isMilitary) color = TFT_MAGENTA;
         if (emerg) color = blinkOn ? TFT_RED : TFT_DARKGREY;
 
         if (!std::isnan(ac.track)) {
@@ -525,6 +526,7 @@ void drawDetail() {
 
     double b = bearingDeg(g_centerLat, g_centerLon, ac.lat, ac.lon);
     std::string sub = (ac.type.empty() ? "----" : ac.type);
+    if (ac.isMilitary) sub = "MIL  " + sub;
     sub += "  ";
     sub += compassPoint(b);
     if (ac.squawk != 0) { sub += "  "; sub += std::to_string(ac.squawk); }

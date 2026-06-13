@@ -37,6 +37,7 @@ struct Aircraft {
     std::string hex;          // ICAO24 lowercase ("" if absent; JSON path only)
     std::string origin;       // route origin ICAO ("" if unknown)
     std::string dest;         // route dest ICAO ("" if unknown)
+    bool isMilitary = false;
     double lat = 0.0;
     double lon = 0.0;
     double distKm = 0.0;   // filled by parseNearest
@@ -67,6 +68,7 @@ inline std::vector<Aircraft> parseNearest(const std::string& json,
     filter["ac"][0]["r"] = true;
     filter["ac"][0]["lat"] = true;
     filter["ac"][0]["lon"] = true;
+    filter["ac"][0]["dbFlags"] = true;
 
     JsonDocument doc;
     DeserializationError err =
@@ -87,6 +89,13 @@ inline std::vector<Aircraft> parseNearest(const std::string& json,
         if (a["track"].is<double>()) ac.track = a["track"].as<double>();
         if (a["squawk"].is<const char*>()) ac.squawk = atoi(a["squawk"].as<const char*>());
         ac.registration = trimStr(a["r"].as<const char*>());
+        int dbFlags = 0;
+        if (a["dbFlags"].is<int>()) {
+            dbFlags = a["dbFlags"].as<int>();
+        } else if (a["dbFlags"].is<const char*>()) {
+            dbFlags = atoi(a["dbFlags"].as<const char*>());
+        }
+        ac.isMilitary = (dbFlags & 1) != 0;
         if (hideGround && ac.onGround) continue; // drop ground traffic before sort/cap
         ac.lat = a["lat"] | 0.0;
         ac.lon = a["lon"] | 0.0;
