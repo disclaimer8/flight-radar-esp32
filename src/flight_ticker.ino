@@ -140,6 +140,14 @@ static const char* PHOTO_UA =
 PhotoSlot g_photoCache[PHOTO_CACHE_SLOTS];
 std::map<std::string, bool> g_photoMiss;  // negative cache (known no-photo), per boot
 
+// TLS handshake timeout (SECONDS) for every WiFiClientSecure. The core defaults
+// handshake_timeout to 120 s and setConnectTimeout() does NOT cover it, so a host
+// that completes the TCP connect but stalls the TLS handshake (e.g. a slow/flaky
+// hexdb.io route lookup) blocks the calling thread for up to 2 minutes. On the
+// single netTask that wedges all polling AND leaves g_photoReq stuck forever.
+// Bounding the handshake makes such a stall fail fast instead.
+static const unsigned long TLS_HANDSHAKE_TIMEOUT_S = 6;
+
 // Persistent download scratch: avoids interleaving transient 150 KB
 // allocations with the permanent 115 KB photo slots (PSRAM fragmentation).
 static const size_t PHOTO_DL_MAX = 150 * 1024;
@@ -177,11 +185,13 @@ char          g_routeResDest[8] = "";
 // (its private cache) and publishes the cache-owned pixel pointer + credit.
 char          g_photoReqReg[12] = "";
 char          g_photoReqHex[8] = "";
+char          g_photoReqKey[12] = "";  // loop: aircraft this PHOTO view is waiting on (reg|hex)
 volatile bool g_photoReq = false;      // loop sets, netTask clears
 uint16_t*     g_photoResPx = nullptr;
 char          g_photoResCredit[48] = "";
+char          g_photoResKey[12] = "";  // netTask: aircraft this result is FOR (reg|hex)
 volatile bool g_photoResOk = false;
-volatile bool g_photoReady = false;    // written LAST by netTask
+volatile bool g_photoReady = false;    // written LAST by netTask (after a release barrier)
 
 bool          g_photoLoading = false;          // PHOTO view: request in flight
 unsigned long g_photoMsgUntil = 0;             // non-blocking "No photo" deadline
@@ -195,6 +205,7 @@ void netPoll() {
     static bool s_init = false;
     if (!s_init) {
         s_client.setInsecure();   // public read-only data; no CA pinning
+        s_client.setHandshakeTimeout(TLS_HANDSHAKE_TIMEOUT_S);  // never block netTask 120 s on a stalled handshake
         s_http.setReuse(true);
         s_init = true;
     }
@@ -261,8 +272,19 @@ void netTask(void*) {
             PhotoResult r = fetchPhoto(ac);    // netTask-private cache/decoder
             g_photoResPx = r.px;
             strlcpy(g_photoResCredit, r.photographer.c_str(), sizeof(g_photoResCredit));
+            // Stamp which aircraft this result is for so loop() can reject a
+            // mismatched/late result instead of painting it on the wrong view.
+            strlcpy(g_photoResKey,
+                    ac.registration.empty() ? ac.hex.c_str() : ac.registration.c_str(),
+                    sizeof(g_photoResKey));
             g_photoResOk = r.ok;
-            g_photoReady = true;               // flag last
+            // Release barrier: publish all the result fields above BEFORE the ready
+            // flag. loop() runs on the OTHER core; without this it can see
+            // g_photoReady=true while g_photoResPx still holds the previous
+            // aircraft's pointer → "shows the previous/wrong photo" (self-heals on
+            // retry). The "flag written last" convention is not enough cross-core.
+            __sync_synchronize();
+            g_photoReady = true;
             g_photoReq = false;
         }
         vTaskDelay(pdMS_TO_TICKS(50));
@@ -304,6 +326,7 @@ std::pair<std::string, std::string> lookupRoute(const std::string& callsign) {
     char url[96];
     std::snprintf(url, sizeof(url), "https://hexdb.io/api/v1/route/icao/%s", callsign.c_str());
     WiFiClientSecure client; client.setInsecure();
+    client.setHandshakeTimeout(TLS_HANDSHAKE_TIMEOUT_S);
     HTTPClient http; http.begin(client, url);
     http.setUserAgent("flight-ticker-esp32");
     http.setConnectTimeout(2500); http.setTimeout(2500);
@@ -624,8 +647,19 @@ void enterPhotoView() {
     // be reading the request buffers — never overwrite them mid-read. The user
     // just re-swipes once the previous fetch drains (≤3 s).
     if (g_photoReq) return;
+    // Discard any completed-but-unconsumed result from the PREVIOUS aircraft's
+    // fetch: we only reach here with g_photoReq clear, i.e. the prior fetch
+    // already finished and may have left g_photoReady set. If we didn't drop it,
+    // loop() would paint that stale photo onto this new aircraft's view before
+    // the fresh fetch lands ("shows the previous aircraft" bug).
+    g_photoReady = false;
     strlcpy(g_photoReqReg, ac.registration.c_str(), sizeof(g_photoReqReg));
     strlcpy(g_photoReqHex, ac.hex.c_str(), sizeof(g_photoReqHex));
+    // Identity of the aircraft we're now waiting on; the consume in loop() applies
+    // a result only if g_photoResKey matches this.
+    strlcpy(g_photoReqKey,
+            ac.registration.empty() ? ac.hex.c_str() : ac.registration.c_str(),
+            sizeof(g_photoReqKey));
     g_photoReq = true;
     g_photoLoading = true;
     g_photoPx = nullptr;
@@ -767,6 +801,7 @@ void sendScanResults(const std::vector<ScanNet>& nets) {
 // Returns true on success; never allocates or frees memory.
 bool httpsGetToBuf(const char* url, uint8_t* buf, size_t maxLen, size_t* outLen) {
     WiFiClientSecure client; client.setInsecure();
+    client.setHandshakeTimeout(TLS_HANDSHAKE_TIMEOUT_S);
     HTTPClient http; http.begin(client, url);
     http.setUserAgent(PHOTO_UA);
     http.setConnectTimeout(2500); http.setTimeout(4000);
@@ -833,6 +868,7 @@ PhotoResult fetchPhoto(const Aircraft& ac) {
     String jsonBody;
     {
         WiFiClientSecure client; client.setInsecure();
+        client.setHandshakeTimeout(TLS_HANDSHAKE_TIMEOUT_S);
         HTTPClient http; http.begin(client, url);
         http.setUserAgent(PHOTO_UA);
         http.setConnectTimeout(2500); http.setTimeout(4000);
@@ -991,7 +1027,11 @@ void loop() {
     }
     if (g_photoReady) {
         g_photoReady = false;
-        if (g_view == PHOTO && g_photoLoading) {
+        __sync_synchronize();   // acquire: pair with netTask's release; result fields now valid
+        // Only apply a result that belongs to the aircraft this view is waiting on.
+        // A late/mismatched result (e.g. the previous aircraft's) is discarded.
+        bool matches = (strcmp((const char*)g_photoResKey, g_photoReqKey) == 0);
+        if (g_view == PHOTO && g_photoLoading && matches) {
             g_photoLoading = false;
             if (g_photoResOk) {
                 g_photoPx = g_photoResPx;
@@ -1000,7 +1040,7 @@ void loop() {
                 g_photoMsgUntil = millis() + 1500;   // "No photo", then back
             }
         }
-        // else: user already left PHOTO — discard the late result.
+        // else: stale / mismatched / late result, or user left PHOTO — discard.
     }
     if (g_wifiCfgReady) {
         g_wifiCfgReady = false;
