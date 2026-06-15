@@ -107,11 +107,19 @@ re-centers on the packet's GPS and plots them. BLE data is used **only when
 Wi-Fi is down** and the last packet is still fresh (≤ `BLE_FRESHNESS_MS`,
 default 30 s); after that the screen shows **NO LINK**. The wire format
 (v3, header + up to 10 × 48-byte records) and GATT UUIDs are documented in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). There are **three** GATT
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). There are **four** GATT
 characteristics: `f1a90002` (aircraft ingest, WRITE), `f1a90003` (Wi-Fi
-config, WRITE + NOTIFY — used by the BLE provisioning path above), and
+config, WRITE + NOTIFY — used by the BLE provisioning path above),
 `f1a90004` (Wi-Fi network scan, WRITE + NOTIFY — app writes a scan request,
-device scans asynchronously and notifies one record per discovered network).
+device scans asynchronously and notifies one record per discovered network),
+and `f1a90005` (photo transfer, WRITE + NOTIFY — see below).
+
+**Photos over BLE.** The PHOTO view works on the BLE path too: a swipe-up
+NOTIFYs a photo request (`f1a90005`) for the selected aircraft; the companion app
+fetches the wsrv.nl-proxied, extra-compressed 240×240 baseline JPEG and WRITEs it
+back in chunks, which the device decodes on-device via the shared
+`decodeJpegToCache` path (same as the Wi-Fi photo flow). No photo / phone offline
+shows "No photo".
 
 > **Phone companion app** — `companion/` is a Flutter app (Android **and** iOS,
 > hardware-verified). It is both a **viewer** and a feeder: its home screen shows
