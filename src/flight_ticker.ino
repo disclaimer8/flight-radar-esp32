@@ -223,6 +223,9 @@ std::pair<std::string, std::string> lookupRoute(const std::string& callsign);
 // Forward declaration: fetchPhoto is defined after the photo pipeline globals.
 // netTask calls it on core 0 (its private cache); loop() must never call it.
 PhotoResult fetchPhoto(const Aircraft& ac);
+// Forward declaration: shared JPEG decode (Wi-Fi + BLE photo paths), netTask-only.
+PhotoResult decodeJpegToCache(const uint8_t* buf, size_t len,
+                              const std::string& key, const std::string& credit);
 
 // ---- netTask: all outbound HTTP on core 0 (render loop stays on core 1) ----
 // Hand-off = the house volatile-flag pattern: netTask is the only writer of
@@ -349,6 +352,26 @@ void netTask(void*) {
             __sync_synchronize();
             g_photoReady = true;
             g_photoReq = false;
+        }
+        if (g_blePhotoReady) {
+            g_blePhotoReady = false;
+            __sync_synchronize();   // acquire: see the bytes the BLE callback wrote
+            PhotoResult r = decodeJpegToCache(g_blePhotoBuf, g_blePhotoExpected,
+                                              g_blePhotoKey, g_blePhotoCredit);
+            g_photoResPx = r.px;
+            strlcpy(g_photoResCredit, r.photographer.c_str(), sizeof(g_photoResCredit));
+            strlcpy(g_photoResKey, g_blePhotoKey, sizeof(g_photoResKey));
+            g_photoResOk = r.ok;
+            __sync_synchronize();   // publish results before the ready flag
+            g_photoReady = true;
+        }
+        if (g_blePhotoNone) {
+            g_blePhotoNone = false;
+            g_photoResPx = nullptr;
+            g_photoResOk = false;
+            strlcpy(g_photoResKey, g_blePhotoKey, sizeof(g_photoResKey));
+            __sync_synchronize();
+            g_photoReady = true;
         }
         vTaskDelay(pdMS_TO_TICKS(50));
     }
@@ -710,6 +733,33 @@ void enterPhotoView() {
     if (g_idx >= g_cache.size()) g_idx = 0;
     const Aircraft& ac = g_cache[g_idx];
     if (WiFi.status() != WL_CONNECTED) {
+        // BLE photo path: the phone (which has internet) fetches + streams it.
+        // Requires a connected central and the photo characteristic.
+        if (g_source == SRC_BLE && g_bleServer && g_bleServer->getConnectedCount() > 0
+            && g_photoBleChar && g_blePhotoBuf) {
+            std::string key = ac.registration.empty() ? ac.hex : ac.registration;
+            if (!key.empty()) {
+                g_blePhotoReqId++;                 // new request; invalidates stale streams
+                g_blePhotoExpected = 0;
+                g_blePhotoGot = 0;
+                g_blePhotoReady = false;
+                g_blePhotoNone = false;
+                g_blePhotoCredit[0] = '\0';
+                strlcpy(g_blePhotoKey, key.c_str(), sizeof(g_blePhotoKey));
+                uint8_t reqBuf[PHOTOBLE_REQ_MAX];
+                size_t rn = buildPhotoReq(reqBuf, g_blePhotoReqId, key);
+                if (rn) { g_photoBleChar->setValue(reqBuf, rn); g_photoBleChar->notify(); }
+                // Same loading + identity state the Wi-Fi path uses.
+                g_photoReady = false;
+                strlcpy(g_photoReqKey, key.c_str(), sizeof(g_photoReqKey));
+                g_photoLoading = true;
+                g_photoPx = nullptr;
+                g_photoMsgUntil = 0;
+                g_blePhotoDeadline = millis() + BLE_PHOTO_TIMEOUT_MS;
+                g_view = PHOTO;
+                return;
+            }
+        }
         flashPhotoMsg("No Wi-Fi");
         drainTouch();
         return;
@@ -1130,6 +1180,7 @@ void loop() {
         bool matches = (strcmp((const char*)g_photoResKey, g_photoReqKey) == 0);
         if (g_view == PHOTO && g_photoLoading && matches) {
             g_photoLoading = false;
+            g_blePhotoDeadline = 0;
             if (g_photoResOk) {
                 g_photoPx = g_photoResPx;
                 g_photoCredit = (const char*)g_photoResCredit;
@@ -1138,6 +1189,14 @@ void loop() {
             }
         }
         // else: stale / mismatched / late result, or user left PHOTO — discard.
+    }
+    // BLE photo never arrived (phone offline / no photo / lost) → stop "Loading".
+    if (g_blePhotoDeadline && millis() > g_blePhotoDeadline) {
+        g_blePhotoDeadline = 0;
+        if (g_view == PHOTO && g_photoLoading) {
+            g_photoLoading = false;
+            g_photoMsgUntil = millis() + 1500;   // "No photo"
+        }
     }
     if (g_wifiCfgReady) {
         g_wifiCfgReady = false;
