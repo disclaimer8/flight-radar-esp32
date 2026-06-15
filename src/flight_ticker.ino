@@ -857,6 +857,42 @@ void photoCacheInsert(const std::string& key, uint16_t* px, const std::string& p
     slot->photographer = photographer; slot->lastUse = millis();
 }
 
+// Decode a baseline JPEG in `buf` (len bytes) into a fresh PSRAM 240x240 RGB565
+// frame, insert it into the LRU cache under `key`, and return it. Undecodable
+// images are negative-cached. netTask-only (owns g_jpeg + the cache). Shared by
+// the Wi-Fi fetch and the BLE photo-receive path.
+PhotoResult decodeJpegToCache(const uint8_t* buf, size_t len,
+                              const std::string& key, const std::string& credit) {
+    PhotoResult res;
+    uint16_t* px = (uint16_t*)heap_caps_malloc(240 * 240 * 2, MALLOC_CAP_SPIRAM);
+    if (!px) return res;
+    std::memset(px, 0, 240 * 240 * 2);   // black letterbox margins
+    if (g_jpeg.openRAM((uint8_t*)buf, (int)len, photoDrawCb)) {
+        int d = pickJpegScale(g_jpeg.getWidth(), g_jpeg.getHeight());
+        int opt = (d == 8) ? JPEG_SCALE_EIGHTH
+                : (d == 4) ? JPEG_SCALE_QUARTER
+                : (d == 2) ? JPEG_SCALE_HALF : 0;
+        g_decTarget = px;
+        g_decOffX = cropOffset(g_jpeg.getWidth() / d);
+        g_decOffY = cropOffset(g_jpeg.getHeight() / d);
+        g_jpeg.setPixelType(RGB565_LITTLE_ENDIAN);
+        int ok = g_jpeg.decode(0, 0, opt);
+        g_jpeg.close();
+        g_decTarget = nullptr;
+        if (ok) {
+            photoCacheInsert(key, px, credit);
+            res.ok = true; res.px = px; res.photographer = credit;
+        } else {
+            heap_caps_free(px);
+            g_photoMiss[key] = true;
+        }
+    } else {
+        heap_caps_free(px);
+        g_photoMiss[key] = true;
+    }
+    return res;
+}
+
 // Blocking lookup+fetch+decode (~1-3 s) — deliberate one-shot user action,
 // same acceptance as the 12 s provisioning block. Cache hits return instantly.
 PhotoResult fetchPhoto(const Aircraft& ac) {
@@ -907,35 +943,7 @@ PhotoResult fetchPhoto(const Aircraft& ac) {
     // which JPEGDEC can't really decode (see buildProxiedPhotoUrl).
     std::string imgUrl = buildProxiedPhotoUrl(meta.url);
     if (!httpsGetToBuf(imgUrl.c_str(), g_photoDlBuf, PHOTO_DL_MAX, &ilen)) return res;  // transient network failure: don't negative-cache
-
-    uint16_t* px = (uint16_t*)heap_caps_malloc(240 * 240 * 2, MALLOC_CAP_SPIRAM);
-    if (!px) return res;
-    std::memset(px, 0, 240 * 240 * 2);  // black letterbox margins
-
-    if (g_jpeg.openRAM(g_photoDlBuf, (int)ilen, photoDrawCb)) {
-        int d = pickJpegScale(g_jpeg.getWidth(), g_jpeg.getHeight());
-        int opt = (d == 8) ? JPEG_SCALE_EIGHTH
-                : (d == 4) ? JPEG_SCALE_QUARTER
-                : (d == 2) ? JPEG_SCALE_HALF : 0;
-        g_decTarget = px;
-        g_decOffX = cropOffset(g_jpeg.getWidth() / d);
-        g_decOffY = cropOffset(g_jpeg.getHeight() / d);
-        g_jpeg.setPixelType(RGB565_LITTLE_ENDIAN);
-        int ok = g_jpeg.decode(0, 0, opt);
-        g_jpeg.close();
-        g_decTarget = nullptr;
-        if (ok) {
-            photoCacheInsert(key, px, meta.photographer);
-            res.ok = true; res.px = px; res.photographer = meta.photographer;
-        } else {
-            heap_caps_free(px);
-            g_photoMiss[key] = true;  // undecodable image: don't retry each tap
-        }
-    } else {
-        heap_caps_free(px);
-        g_photoMiss[key] = true;
-    }
-    return res;
+    return decodeJpegToCache(g_photoDlBuf, ilen, key, meta.photographer);
 }
 
 // Apply a received Wi-Fi provisioning packet: parse, join, persist, report.
