@@ -6,6 +6,7 @@
 #include "../../src/wifi_scan_core.h"
 #include "../../src/ble_core.h"
 #include "../../src/photo_core.h"
+#include "../../src/photo_ble_core.h"
 #include <cstring>
 
 static const char* SAMPLE_JSON =
@@ -705,6 +706,61 @@ void test_build_proxied_photo_url(void) {
         buildProxiedPhotoUrl("bare.host/p.jpg").c_str());
 }
 
+void test_photoble_req_roundtrip() {
+    uint8_t buf[PHOTOBLE_REQ_MAX];
+    size_t n = buildPhotoReq(buf, 7, "ABC-123");
+    TEST_ASSERT_EQUAL_UINT32(5 + 7, n);
+    PhotoReq r = parsePhotoReq(buf, n);
+    TEST_ASSERT_TRUE(r.ok);
+    TEST_ASSERT_EQUAL_UINT8(7, r.reqId);
+    TEST_ASSERT_EQUAL_STRING("ABC-123", r.key.c_str());
+}
+
+void test_photoble_req_rejects() {
+    uint8_t buf[PHOTOBLE_REQ_MAX];
+    TEST_ASSERT_EQUAL_UINT32(0, buildPhotoReq(buf, 1, ""));                  // empty key
+    TEST_ASSERT_EQUAL_UINT32(0, buildPhotoReq(buf, 1, "TOOLONGKEY12"));      // 12 > max 11
+    uint8_t bad[5] = {0x50, 0x52, 1, 1, 0};                                  // keyLen 0
+    TEST_ASSERT_FALSE(parsePhotoReq(bad, 5).ok);
+    uint8_t wrongmagic[6] = {0x50, 0x48, 1, 1, 1, 'A'};
+    TEST_ASSERT_FALSE(parsePhotoReq(wrongmagic, 6).ok);
+}
+
+void test_photoble_header_parse() {
+    uint8_t buf[64];
+    buf[0] = 0x50; buf[1] = 0x48; buf[2] = 1; buf[3] = 9;
+    uint32_t total = 5000; std::memcpy(buf + 4, &total, 4);
+    const char* cred = "Jane Doe"; buf[8] = (uint8_t)strlen(cred);
+    std::memcpy(buf + 9, cred, strlen(cred));
+    PhotoHeader h = parsePhotoHeader(buf, 9 + strlen(cred));
+    TEST_ASSERT_TRUE(h.ok);
+    TEST_ASSERT_EQUAL_UINT8(9, h.reqId);
+    TEST_ASSERT_EQUAL_UINT32(5000, h.totalLen);
+    TEST_ASSERT_EQUAL_STRING("Jane Doe", h.credit.c_str());
+}
+
+void test_photoble_header_zero_len_and_rejects() {
+    uint8_t z[9] = {0x50, 0x48, 1, 3, 0, 0, 0, 0, 0};   // totalLen 0, credLen 0
+    PhotoHeader h = parsePhotoHeader(z, 9);
+    TEST_ASSERT_TRUE(h.ok);
+    TEST_ASSERT_EQUAL_UINT32(0, h.totalLen);
+    TEST_ASSERT_FALSE(parsePhotoHeader(z, 8).ok);                 // too short
+    uint8_t badcred[9] = {0x50, 0x48, 1, 1, 0x10, 0, 0, 0, 60};   // credLen 60 > max
+    TEST_ASSERT_FALSE(parsePhotoHeader(badcred, 9).ok);
+}
+
+void test_photoble_chunk_parse() {
+    uint8_t buf[10] = {0x50, 0x44, 1, 4, 0x02, 0x00, 0xDE, 0xAD, 0xBE, 0xEF};
+    PhotoChunk c = parsePhotoChunk(buf, 10);
+    TEST_ASSERT_TRUE(c.ok);
+    TEST_ASSERT_EQUAL_UINT8(4, c.reqId);
+    TEST_ASSERT_EQUAL_UINT16(2, c.seq);
+    TEST_ASSERT_EQUAL_UINT32(4, c.dataLen);
+    TEST_ASSERT_EQUAL_UINT8(0xDE, c.data[0]);
+    TEST_ASSERT_EQUAL_UINT8(0xEF, c.data[3]);
+    TEST_ASSERT_FALSE(parsePhotoChunk(buf, 5).ok);               // too short for header
+}
+
 int main(int, char **) {
     UNITY_BEGIN();
     RUN_TEST(test_ftToM);
@@ -770,5 +826,10 @@ int main(int, char **) {
     RUN_TEST(test_parse_planespotters_photo_misses);
     RUN_TEST(test_pick_jpeg_scale_and_crop);
     RUN_TEST(test_build_proxied_photo_url);
+    RUN_TEST(test_photoble_req_roundtrip);
+    RUN_TEST(test_photoble_req_rejects);
+    RUN_TEST(test_photoble_header_parse);
+    RUN_TEST(test_photoble_header_zero_len_and_rejects);
+    RUN_TEST(test_photoble_chunk_parse);
     return UNITY_END();
 }
