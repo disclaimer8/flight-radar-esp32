@@ -62,6 +62,15 @@ int g_rangeIdx = 1;  // index into kRangePresets; default 50 km. Restored from N
 double g_obsLat = MY_LAT;  // observer location; default from config.h, restored from NVS in setup()
 double g_obsLon = MY_LON;
 
+// Wi-Fi setup portal. The portal now runs in NON-BLOCKING mode so loop() keeps
+// servicing BLE provisioning (and the radar) while the portal is open. That means
+// the WiFiManager + its parameters must live at file scope (they outlive the call
+// that opens the portal) and loop() must call g_wm.process() while g_portalActive.
+WiFiManager g_wm;
+WiFiManagerParameter g_latParam("lat", "Observer latitude", "", 15);
+WiFiManagerParameter g_lonParam("lon", "Observer longitude", "", 15);
+bool g_portalActive = false;
+
 // Touch INT latch: the CST816S pulses INT briefly on a touch event, too short to
 // catch by polling the level each frame. A FALLING-edge ISR latches it; the loop
 // reads the gesture once per event. Idle = no edge = no I2C, so the radar stays smooth.
@@ -368,25 +377,33 @@ void drawSetupScreen() {
     tft.fillScreen(TFT_BLACK);
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(TFT_CYAN, TFT_BLACK);
-    tft.drawString("SETUP", CX, 70, 4);
+    tft.drawString("SETUP", CX, 60, 4);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.drawString("Join Wi-Fi:", CX, 110, 2);
+    tft.drawString("Join Wi-Fi:", CX, 98, 2);
     tft.setTextColor(TFT_GREEN, TFT_BLACK);
-    tft.drawString("FlightRadar-Setup", CX, 132, 2);
+    tft.drawString("FlightRadar-Setup", CX, 118, 2);
     tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-    tft.drawString("then open 192.168.4.1", CX, 160, 2);
+    tft.drawString("then open 192.168.4.1", CX, 140, 2);
+    tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    tft.drawString("- or -", CX, 162, 2);
+    tft.setTextColor(TFT_CYAN, TFT_BLACK);
+    tft.drawString("send Wi-Fi from app", CX, 180, 2);
 }
 
-// Wire the lat/lon parameters + portal callbacks onto a WiFiManager. The two
-// WiFiManagerParameters are owned by the caller (they must outlive the portal).
-void setupPortalParams(WiFiManager& wm, WiFiManagerParameter& latParam,
-                       WiFiManagerParameter& lonParam) {
-    wm.addParameter(&latParam);
-    wm.addParameter(&lonParam);
-    wm.setAPCallback([](WiFiManager*) { drawSetupScreen(); });
-    wm.setSaveParamsCallback([&latParam, &lonParam]() {
+// One-time WiFiManager wiring — called once from setup() before connectWifi().
+// Non-blocking portal: loop() drives it via g_wm.process() while g_portalActive,
+// so BLE provisioning and the radar keep running while the portal is open. The
+// lat/lon params + callbacks are wired once here; their values are refreshed per
+// open via refreshPortalLatLon().
+void wmInit() {
+    g_wm.setConfigPortalBlocking(false);   // loop() must call g_wm.process()
+    g_wm.setConfigPortalTimeout(180);      // 3 min, then close (BLE fallback)
+    g_wm.addParameter(&g_latParam);
+    g_wm.addParameter(&g_lonParam);
+    g_wm.setAPCallback([](WiFiManager*) { drawSetupScreen(); });
+    g_wm.setSaveParamsCallback([]() {
         double la, lo;
-        if (parseLatLon(latParam.getValue(), lonParam.getValue(), la, lo)) {
+        if (parseLatLon(g_latParam.getValue(), g_lonParam.getValue(), la, lo)) {
             g_obsLat = la;
             g_obsLon = lo;
             saveLocation(la, lo);
@@ -394,16 +411,21 @@ void setupPortalParams(WiFiManager& wm, WiFiManagerParameter& latParam,
     });
 }
 
-void connectWifi() {
-    WiFiManager wm;
-    wm.setConfigPortalTimeout(180);   // 3 min, then boot offline (BLE fallback)
-
+// Refresh the portal's lat/lon fields from the current observer location so the
+// captive-portal form shows the live values whenever it opens.
+void refreshPortalLatLon() {
     char latBuf[16], lonBuf[16];
     std::snprintf(latBuf, sizeof(latBuf), "%.4f", g_obsLat);
     std::snprintf(lonBuf, sizeof(lonBuf), "%.4f", g_obsLon);
-    WiFiManagerParameter latParam("lat", "Observer latitude", latBuf, 15);
-    WiFiManagerParameter lonParam("lon", "Observer longitude", lonBuf, 15);
-    setupPortalParams(wm, latParam, lonParam);
+    g_latParam.setValue(latBuf, 15);
+    g_lonParam.setValue(lonBuf, 15);
+}
+
+// Boot Wi-Fi: try saved/seed creds; if they fail, autoConnect opens the portal in
+// the background. Non-blocking, so this returns immediately either way and setup()
+// proceeds; g_portalActive tracks whether the portal is up.
+void connectWifi() {
+    refreshPortalLatLon();
 
     // Seed: with no stored credentials, persist config.h creds so autoConnect
     // tries them before falling back to the portal.
@@ -413,23 +435,18 @@ void connectWifi() {
     }
 
     WiFi.setAutoReconnect(true);
-    wm.autoConnect("FlightRadar-Setup");
-    Serial.println(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString()
-                                                 : "WiFi not connected");
+    bool connected = g_wm.autoConnect("FlightRadar-Setup");  // non-blocking
+    g_portalActive = !connected;                             // portal up if not connected
+    Serial.println(connected ? WiFi.localIP().toString() : "WiFi portal open");
 }
 
-// Reopen the setup portal on demand (long-press). Blocks loop() while active.
+// Reopen the setup portal on demand (long-press). Non-blocking: loop() services it
+// via g_wm.process(), so BLE provisioning still works while it's open.
 void startPortalOnDemand() {
-    WiFiManager wm;
-    wm.setConfigPortalTimeout(180);
-    char latBuf[16], lonBuf[16];
-    std::snprintf(latBuf, sizeof(latBuf), "%.4f", g_obsLat);
-    std::snprintf(lonBuf, sizeof(lonBuf), "%.4f", g_obsLon);
-    WiFiManagerParameter latParam("lat", "Observer latitude", latBuf, 15);
-    WiFiManagerParameter lonParam("lon", "Observer longitude", lonBuf, 15);
-    setupPortalParams(wm, latParam, lonParam);
+    refreshPortalLatLon();
     drawSetupScreen();
-    wm.startConfigPortal("FlightRadar-Setup");
+    g_wm.startConfigPortal("FlightRadar-Setup");   // non-blocking, returns now
+    g_portalActive = true;
 }
 
 void drawRadar() {
@@ -926,6 +943,8 @@ PhotoResult fetchPhoto(const Aircraft& ac) {
 void applyWifiConfig() {
     WifiConfig cfg = parseWifiConfig(g_wifiCfgBuf, g_wifiCfgLen);
     if (!cfg.ok) { notifyWifiStatus(2, "bad config"); return; }
+    // Tear down the captive-portal AP (if open) for a clean STA connect.
+    if (g_portalActive) { g_wm.stopConfigPortal(); g_portalActive = false; }
     tft.fillScreen(TFT_BLACK);
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(TFT_CYAN, TFT_BLACK);
@@ -940,6 +959,9 @@ void applyWifiConfig() {
         notifyWifiStatus(1, WiFi.localIP().toString());
     } else {
         notifyWifiStatus(2, "connect failed");
+        // Don't lock the user out — reopen the (non-blocking) portal so they can
+        // retry over BLE or via the browser.
+        startPortalOnDemand();
     }
 }
 
@@ -996,6 +1018,7 @@ void setup() {
     tft.setTextColor(TFT_GREEN, TFT_BLACK);
     tft.drawString("WiFi...", CX, CY, 4);
 
+    wmInit();
     connectWifi();
     // First poll comes from netTask within ~2 s of boot.
     xTaskCreatePinnedToCore(netTask, "net", 12288, nullptr, 1, nullptr, 0);
@@ -1005,6 +1028,11 @@ void setup() {
 
 void loop() {
     unsigned long now = millis();
+    // Drive the non-blocking captive portal. process() returns false once the
+    // portal has closed (creds saved + connected, or the 180 s timeout elapsed).
+    if (g_portalActive) {
+        if (!g_wm.process()) g_portalActive = false;
+    }
     if (g_blePacketReady) {
         g_blePacketReady = false;
         BlePacket pkt = parseBlePacket(g_bleBuf, g_bleLen, MAX_AIRCRAFT, HIDE_GROUND_AIRCRAFT);
@@ -1099,9 +1127,13 @@ void loop() {
     uint8_t want = (millis() - g_lastTouch >= BL_DIM_MS) ? BL_DIM : BL_FULL;
     if (want != g_blLevel) { g_blLevel = want; ledcWrite(0, want); }
 
-    if (g_view == RADAR) drawRadar();
-    else if (g_view == DETAIL) drawDetail();
-    else drawPhoto();
+    // While the setup portal is open and Wi-Fi isn't connected yet, keep the SETUP
+    // screen on display (drawn when the portal opened) and skip the normal views.
+    if (!(g_portalActive && WiFi.status() != WL_CONNECTED)) {
+        if (g_view == RADAR) drawRadar();
+        else if (g_view == DETAIL) drawDetail();
+        else drawPhoto();
+    }
     delay(16); // ~60 fps cap
 }
 #endif // ARDUINO
