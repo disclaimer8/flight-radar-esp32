@@ -16,6 +16,7 @@
 #include <NimBLEDevice.h>
 #include <JPEGDEC.h>
 #include "ble_core.h"
+#include "photo_ble_core.h"
 #include <map>
 #include <Preferences.h>
 
@@ -85,6 +86,7 @@ static const char* BLE_SERVICE_UUID = "f1a90001-7e1d-4c2a-9b3f-1a2b3c4d5e6f";
 static const char* BLE_CHAR_UUID    = "f1a90002-7e1d-4c2a-9b3f-1a2b3c4d5e6f";
 static const char* BLE_WIFICFG_UUID = "f1a90003-7e1d-4c2a-9b3f-1a2b3c4d5e6f";
 static const char* BLE_WIFISCAN_UUID = "f1a90004-7e1d-4c2a-9b3f-1a2b3c4d5e6f";
+static const char* BLE_PHOTO_UUID = "f1a90005-7e1d-4c2a-9b3f-1a2b3c4d5e6f";
 
 static uint8_t  g_bleBuf[BLE_MAX_PACKET];
 volatile size_t g_bleLen = 0;
@@ -130,6 +132,58 @@ class WifiScanCallbacks : public NimBLECharacteristicCallbacks {
         std::string v = c->getValue();
         if (isScanRequest(reinterpret_cast<const uint8_t*>(v.data()), v.size()))
             g_wifiScanRequested = true;
+    }
+};
+
+// --- Photo over BLE (phone-streamed; used only when Wi-Fi is down) ---
+static const size_t   BLE_PHOTO_MAX = 48 * 1024;          // == PHOTOBLE_MAX_IMG
+static const unsigned long BLE_PHOTO_TIMEOUT_MS = 8000;
+NimBLEServer*         g_bleServer = nullptr;              // to count connected centrals
+NimBLECharacteristic* g_photoBleChar = nullptr;
+uint8_t*              g_blePhotoBuf = nullptr;            // PSRAM, allocated once in setup()
+volatile uint8_t      g_blePhotoReqId = 0;               // current request id (loop-set)
+char                  g_blePhotoKey[12] = "";            // aircraft of the current request (loop-set)
+volatile uint32_t     g_blePhotoExpected = 0;            // totalLen from PH (callback-set)
+volatile uint32_t     g_blePhotoGot = 0;                 // bytes received (callback-set)
+char                  g_blePhotoCredit[48] = "";         // photographer from PH (callback-set)
+volatile bool         g_blePhotoReady = false;           // full image received -> netTask decodes
+volatile bool         g_blePhotoNone = false;            // PH totalLen==0 -> no photo
+unsigned long         g_blePhotoDeadline = 0;            // loop-owned timeout
+
+// Receives PH/PD frames (phone -> device) on f1a90005. Only buffers + flags;
+// netTask decodes. Frames whose reqId != the in-flight g_blePhotoReqId are
+// dropped (a stale stream from a previous swipe).
+class PhotoBleCallbacks : public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic* c) override {
+        std::string v = c->getValue();
+        const uint8_t* p = (const uint8_t*)v.data();
+        size_t n = v.size();
+
+        PhotoHeader h = parsePhotoHeader(p, n);
+        if (h.ok) {
+            if (h.reqId != g_blePhotoReqId) return;            // stale request
+            if (h.totalLen == 0 || h.totalLen > BLE_PHOTO_MAX) {
+                g_blePhotoNone = true;                          // no photo / oversize
+                return;
+            }
+            g_blePhotoExpected = h.totalLen;
+            g_blePhotoGot = 0;
+            strlcpy(g_blePhotoCredit, h.credit.c_str(), sizeof(g_blePhotoCredit));
+            return;
+        }
+
+        PhotoChunk ch = parsePhotoChunk(p, n);
+        if (ch.ok) {
+            if (ch.reqId != g_blePhotoReqId) return;           // stale
+            if (!g_blePhotoBuf || g_blePhotoExpected == 0) return;
+            if (g_blePhotoGot + ch.dataLen > g_blePhotoExpected) return;  // overflow guard
+            std::memcpy(g_blePhotoBuf + g_blePhotoGot, ch.data, ch.dataLen);
+            g_blePhotoGot += ch.dataLen;
+            if (g_blePhotoGot >= g_blePhotoExpected) {
+                __sync_synchronize();      // publish the buffer before the ready flag
+                g_blePhotoReady = true;
+            }
+        }
     }
 };
 
@@ -984,6 +1038,8 @@ void setup() {
     ledcWrite(0, BL_FULL);
     fb.setColorDepth(16);
     if (!fb.createSprite(240, 240)) Serial.println("sprite alloc failed");
+    g_blePhotoBuf = (uint8_t*)heap_caps_malloc(BLE_PHOTO_MAX, MALLOC_CAP_SPIRAM);
+    if (!g_blePhotoBuf) Serial.println("ble photo buf alloc failed");
     touch.begin();
     // Restore the saved display range (default 50 km = index 1) + observer location.
     {
@@ -1003,7 +1059,8 @@ void setup() {
 
     NimBLEDevice::init(BLE_DEVICE_NAME);
     NimBLEDevice::setMTU(517);
-    NimBLEServer* bleServer = NimBLEDevice::createServer();
+    g_bleServer = NimBLEDevice::createServer();
+    NimBLEServer* bleServer = g_bleServer;
     NimBLEService* bleSvc = bleServer->createService(BLE_SERVICE_UUID);
     NimBLECharacteristic* bleCh = bleSvc->createCharacteristic(
         BLE_CHAR_UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
@@ -1016,6 +1073,10 @@ void setup() {
         BLE_WIFISCAN_UUID,
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY);
     g_wifiScanChar->setCallbacks(new WifiScanCallbacks());
+    g_photoBleChar = bleSvc->createCharacteristic(
+        BLE_PHOTO_UUID,
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY);
+    g_photoBleChar->setCallbacks(new PhotoBleCallbacks());
     bleSvc->start();
     NimBLEAdvertising* bleAdv = NimBLEDevice::getAdvertising();
     bleAdv->addServiceUUID(BLE_SERVICE_UUID);
