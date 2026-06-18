@@ -42,7 +42,7 @@ dependencies:
   # Held at 18.x: 19+ moved initialize()/show() to all-named params (breaking).
   # Bumping to 22.x needs a code migration + an APK build to re-verify the
   # Android native wiring (desugaring/minSdk), so it is deferred.
-  flutter_local_notifications: ^18.0.1
+  flutter_local_notifications: ^22.0.1
   flutter_map: ^8.3.0
   latlong2: ^0.9.1
   flutter_map_cancellable_tile_provider: ^3.1.1
