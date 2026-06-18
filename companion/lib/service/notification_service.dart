@@ -15,7 +15,7 @@ class NotificationService {
       requestSoundPermission: true,
     );
     await _plugin.initialize(
-        const InitializationSettings(android: android, iOS: darwin));
+        settings: const InitializationSettings(android: android, iOS: darwin));
     await _plugin
         .resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin>()
@@ -33,6 +33,7 @@ class NotificationService {
       ),
       iOS: DarwinNotificationDetails(presentAlert: true, presentBanner: true, presentSound: true),
     );
-    await _plugin.show(id, title, body, details);
+    await _plugin.show(
+        id: id, title: title, body: body, notificationDetails: details);
   }
 }
