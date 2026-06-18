@@ -16,6 +16,7 @@
 #include <NimBLEDevice.h>
 #include <JPEGDEC.h>
 #include "ble_core.h"
+#include "photo_ble_core.h"
 #include <map>
 #include <Preferences.h>
 
@@ -62,6 +63,15 @@ int g_rangeIdx = 1;  // index into kRangePresets; default 50 km. Restored from N
 double g_obsLat = MY_LAT;  // observer location; default from config.h, restored from NVS in setup()
 double g_obsLon = MY_LON;
 
+// Wi-Fi setup portal. The portal now runs in NON-BLOCKING mode so loop() keeps
+// servicing BLE provisioning (and the radar) while the portal is open. That means
+// the WiFiManager + its parameters must live at file scope (they outlive the call
+// that opens the portal) and loop() must call g_wm.process() while g_portalActive.
+WiFiManager g_wm;
+WiFiManagerParameter g_latParam("lat", "Observer latitude", "", 15);
+WiFiManagerParameter g_lonParam("lon", "Observer longitude", "", 15);
+bool g_portalActive = false;
+
 // Touch INT latch: the CST816S pulses INT briefly on a touch event, too short to
 // catch by polling the level each frame. A FALLING-edge ISR latches it; the loop
 // reads the gesture once per event. Idle = no edge = no I2C, so the radar stays smooth.
@@ -76,6 +86,7 @@ static const char* BLE_SERVICE_UUID = "f1a90001-7e1d-4c2a-9b3f-1a2b3c4d5e6f";
 static const char* BLE_CHAR_UUID    = "f1a90002-7e1d-4c2a-9b3f-1a2b3c4d5e6f";
 static const char* BLE_WIFICFG_UUID = "f1a90003-7e1d-4c2a-9b3f-1a2b3c4d5e6f";
 static const char* BLE_WIFISCAN_UUID = "f1a90004-7e1d-4c2a-9b3f-1a2b3c4d5e6f";
+static const char* BLE_PHOTO_UUID = "f1a90005-7e1d-4c2a-9b3f-1a2b3c4d5e6f";
 
 static uint8_t  g_bleBuf[BLE_MAX_PACKET];
 volatile size_t g_bleLen = 0;
@@ -124,6 +135,58 @@ class WifiScanCallbacks : public NimBLECharacteristicCallbacks {
     }
 };
 
+// --- Photo over BLE (phone-streamed; used only when Wi-Fi is down) ---
+static const size_t   BLE_PHOTO_MAX = 48 * 1024;          // == PHOTOBLE_MAX_IMG
+static const unsigned long BLE_PHOTO_TIMEOUT_MS = 8000;
+NimBLEServer*         g_bleServer = nullptr;              // to count connected centrals
+NimBLECharacteristic* g_photoBleChar = nullptr;
+uint8_t*              g_blePhotoBuf = nullptr;            // PSRAM, allocated once in setup()
+volatile uint8_t      g_blePhotoReqId = 0;               // current request id (loop-set)
+char                  g_blePhotoKey[12] = "";            // aircraft of the current request (loop-set)
+volatile uint32_t     g_blePhotoExpected = 0;            // totalLen from PH (callback-set)
+volatile uint32_t     g_blePhotoGot = 0;                 // bytes received (callback-set)
+char                  g_blePhotoCredit[48] = "";         // photographer from PH (callback-set)
+volatile bool         g_blePhotoReady = false;           // full image received -> netTask decodes
+volatile bool         g_blePhotoNone = false;            // PH totalLen==0 -> no photo
+unsigned long         g_blePhotoDeadline = 0;            // loop-owned timeout
+
+// Receives PH/PD frames (phone -> device) on f1a90005. Only buffers + flags;
+// netTask decodes. Frames whose reqId != the in-flight g_blePhotoReqId are
+// dropped (a stale stream from a previous swipe).
+class PhotoBleCallbacks : public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic* c) override {
+        std::string v = c->getValue();
+        const uint8_t* p = (const uint8_t*)v.data();
+        size_t n = v.size();
+
+        PhotoHeader h = parsePhotoHeader(p, n);
+        if (h.ok) {
+            if (h.reqId != g_blePhotoReqId) return;            // stale request
+            if (h.totalLen == 0 || h.totalLen > BLE_PHOTO_MAX) {
+                g_blePhotoNone = true;                          // no photo / oversize
+                return;
+            }
+            g_blePhotoExpected = h.totalLen;
+            g_blePhotoGot = 0;
+            strlcpy(g_blePhotoCredit, h.credit.c_str(), sizeof(g_blePhotoCredit));
+            return;
+        }
+
+        PhotoChunk ch = parsePhotoChunk(p, n);
+        if (ch.ok) {
+            if (ch.reqId != g_blePhotoReqId) return;           // stale
+            if (!g_blePhotoBuf || g_blePhotoExpected == 0) return;
+            if (g_blePhotoGot + ch.dataLen > g_blePhotoExpected) return;  // overflow guard
+            std::memcpy(g_blePhotoBuf + g_blePhotoGot, ch.data, ch.dataLen);
+            g_blePhotoGot += ch.dataLen;
+            if (g_blePhotoGot >= g_blePhotoExpected) {
+                __sync_synchronize();      // publish the buffer before the ready flag
+                g_blePhotoReady = true;
+            }
+        }
+    }
+};
+
 // ---- Aircraft photo pipeline (PHOTO view) ----------------------------------
 // Decoded 240x240 RGB565 photos live in PSRAM (2 MB, otherwise idle): 8 LRU
 // slots ≈ 920 KB + a transient download buffer. SRAM budget is untouched.
@@ -140,6 +203,14 @@ static const char* PHOTO_UA =
 PhotoSlot g_photoCache[PHOTO_CACHE_SLOTS];
 std::map<std::string, bool> g_photoMiss;  // negative cache (known no-photo), per boot
 
+// TLS handshake timeout (SECONDS) for every WiFiClientSecure. The core defaults
+// handshake_timeout to 120 s and setConnectTimeout() does NOT cover it, so a host
+// that completes the TCP connect but stalls the TLS handshake (e.g. a slow/flaky
+// hexdb.io route lookup) blocks the calling thread for up to 2 minutes. On the
+// single netTask that wedges all polling AND leaves g_photoReq stuck forever.
+// Bounding the handshake makes such a stall fail fast instead.
+static const unsigned long TLS_HANDSHAKE_TIMEOUT_S = 6;
+
 // Persistent download scratch: avoids interleaving transient 150 KB
 // allocations with the permanent 115 KB photo slots (PSRAM fragmentation).
 static const size_t PHOTO_DL_MAX = 150 * 1024;
@@ -152,6 +223,9 @@ std::pair<std::string, std::string> lookupRoute(const std::string& callsign);
 // Forward declaration: fetchPhoto is defined after the photo pipeline globals.
 // netTask calls it on core 0 (its private cache); loop() must never call it.
 PhotoResult fetchPhoto(const Aircraft& ac);
+// Forward declaration: shared JPEG decode (Wi-Fi + BLE photo paths), netTask-only.
+PhotoResult decodeJpegToCache(const uint8_t* buf, size_t len,
+                              const std::string& key, const std::string& credit);
 
 // ---- netTask: all outbound HTTP on core 0 (render loop stays on core 1) ----
 // Hand-off = the house volatile-flag pattern: netTask is the only writer of
@@ -177,11 +251,13 @@ char          g_routeResDest[8] = "";
 // (its private cache) and publishes the cache-owned pixel pointer + credit.
 char          g_photoReqReg[12] = "";
 char          g_photoReqHex[8] = "";
+char          g_photoReqKey[12] = "";  // loop: aircraft this PHOTO view is waiting on (reg|hex)
 volatile bool g_photoReq = false;      // loop sets, netTask clears
 uint16_t*     g_photoResPx = nullptr;
 char          g_photoResCredit[48] = "";
+char          g_photoResKey[12] = "";  // netTask: aircraft this result is FOR (reg|hex)
 volatile bool g_photoResOk = false;
-volatile bool g_photoReady = false;    // written LAST by netTask
+volatile bool g_photoReady = false;    // written LAST by netTask (after a release barrier)
 
 bool          g_photoLoading = false;          // PHOTO view: request in flight
 unsigned long g_photoMsgUntil = 0;             // non-blocking "No photo" deadline
@@ -195,6 +271,7 @@ void netPoll() {
     static bool s_init = false;
     if (!s_init) {
         s_client.setInsecure();   // public read-only data; no CA pinning
+        s_client.setHandshakeTimeout(TLS_HANDSHAKE_TIMEOUT_S);  // never block netTask 120 s on a stalled handshake
         s_http.setReuse(true);
         s_init = true;
     }
@@ -261,9 +338,40 @@ void netTask(void*) {
             PhotoResult r = fetchPhoto(ac);    // netTask-private cache/decoder
             g_photoResPx = r.px;
             strlcpy(g_photoResCredit, r.photographer.c_str(), sizeof(g_photoResCredit));
+            // Stamp which aircraft this result is for so loop() can reject a
+            // mismatched/late result instead of painting it on the wrong view.
+            strlcpy(g_photoResKey,
+                    ac.registration.empty() ? ac.hex.c_str() : ac.registration.c_str(),
+                    sizeof(g_photoResKey));
             g_photoResOk = r.ok;
-            g_photoReady = true;               // flag last
+            // Release barrier: publish all the result fields above BEFORE the ready
+            // flag. loop() runs on the OTHER core; without this it can see
+            // g_photoReady=true while g_photoResPx still holds the previous
+            // aircraft's pointer → "shows the previous/wrong photo" (self-heals on
+            // retry). The "flag written last" convention is not enough cross-core.
+            __sync_synchronize();
+            g_photoReady = true;
             g_photoReq = false;
+        }
+        if (g_blePhotoReady) {
+            g_blePhotoReady = false;
+            __sync_synchronize();   // acquire: see the bytes the BLE callback wrote
+            PhotoResult r = decodeJpegToCache(g_blePhotoBuf, g_blePhotoExpected,
+                                              g_blePhotoKey, g_blePhotoCredit);
+            g_photoResPx = r.px;
+            strlcpy(g_photoResCredit, r.photographer.c_str(), sizeof(g_photoResCredit));
+            strlcpy(g_photoResKey, g_blePhotoKey, sizeof(g_photoResKey));
+            g_photoResOk = r.ok;
+            __sync_synchronize();   // publish results before the ready flag
+            g_photoReady = true;
+        }
+        if (g_blePhotoNone) {
+            g_blePhotoNone = false;
+            g_photoResPx = nullptr;
+            g_photoResOk = false;
+            strlcpy(g_photoResKey, g_blePhotoKey, sizeof(g_photoResKey));
+            __sync_synchronize();
+            g_photoReady = true;
         }
         vTaskDelay(pdMS_TO_TICKS(50));
     }
@@ -304,6 +412,7 @@ std::pair<std::string, std::string> lookupRoute(const std::string& callsign) {
     char url[96];
     std::snprintf(url, sizeof(url), "https://hexdb.io/api/v1/route/icao/%s", callsign.c_str());
     WiFiClientSecure client; client.setInsecure();
+    client.setHandshakeTimeout(TLS_HANDSHAKE_TIMEOUT_S);
     HTTPClient http; http.begin(client, url);
     http.setUserAgent("flight-ticker-esp32");
     http.setConnectTimeout(2500); http.setTimeout(2500);
@@ -345,25 +454,33 @@ void drawSetupScreen() {
     tft.fillScreen(TFT_BLACK);
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(TFT_CYAN, TFT_BLACK);
-    tft.drawString("SETUP", CX, 70, 4);
+    tft.drawString("SETUP", CX, 60, 4);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.drawString("Join Wi-Fi:", CX, 110, 2);
+    tft.drawString("Join Wi-Fi:", CX, 98, 2);
     tft.setTextColor(TFT_GREEN, TFT_BLACK);
-    tft.drawString("FlightRadar-Setup", CX, 132, 2);
+    tft.drawString("FlightRadar-Setup", CX, 118, 2);
     tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-    tft.drawString("then open 192.168.4.1", CX, 160, 2);
+    tft.drawString("then open 192.168.4.1", CX, 140, 2);
+    tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    tft.drawString("- or -", CX, 162, 2);
+    tft.setTextColor(TFT_CYAN, TFT_BLACK);
+    tft.drawString("send Wi-Fi from app", CX, 180, 2);
 }
 
-// Wire the lat/lon parameters + portal callbacks onto a WiFiManager. The two
-// WiFiManagerParameters are owned by the caller (they must outlive the portal).
-void setupPortalParams(WiFiManager& wm, WiFiManagerParameter& latParam,
-                       WiFiManagerParameter& lonParam) {
-    wm.addParameter(&latParam);
-    wm.addParameter(&lonParam);
-    wm.setAPCallback([](WiFiManager*) { drawSetupScreen(); });
-    wm.setSaveParamsCallback([&latParam, &lonParam]() {
+// One-time WiFiManager wiring — called once from setup() before connectWifi().
+// Non-blocking portal: loop() drives it via g_wm.process() while g_portalActive,
+// so BLE provisioning and the radar keep running while the portal is open. The
+// lat/lon params + callbacks are wired once here; their values are refreshed per
+// open via refreshPortalLatLon().
+void wmInit() {
+    g_wm.setConfigPortalBlocking(false);   // loop() must call g_wm.process()
+    g_wm.setConfigPortalTimeout(180);      // 3 min, then close (BLE fallback)
+    g_wm.addParameter(&g_latParam);
+    g_wm.addParameter(&g_lonParam);
+    g_wm.setAPCallback([](WiFiManager*) { drawSetupScreen(); });
+    g_wm.setSaveParamsCallback([]() {
         double la, lo;
-        if (parseLatLon(latParam.getValue(), lonParam.getValue(), la, lo)) {
+        if (parseLatLon(g_latParam.getValue(), g_lonParam.getValue(), la, lo)) {
             g_obsLat = la;
             g_obsLon = lo;
             saveLocation(la, lo);
@@ -371,16 +488,21 @@ void setupPortalParams(WiFiManager& wm, WiFiManagerParameter& latParam,
     });
 }
 
-void connectWifi() {
-    WiFiManager wm;
-    wm.setConfigPortalTimeout(180);   // 3 min, then boot offline (BLE fallback)
-
+// Refresh the portal's lat/lon fields from the current observer location so the
+// captive-portal form shows the live values whenever it opens.
+void refreshPortalLatLon() {
     char latBuf[16], lonBuf[16];
     std::snprintf(latBuf, sizeof(latBuf), "%.4f", g_obsLat);
     std::snprintf(lonBuf, sizeof(lonBuf), "%.4f", g_obsLon);
-    WiFiManagerParameter latParam("lat", "Observer latitude", latBuf, 15);
-    WiFiManagerParameter lonParam("lon", "Observer longitude", lonBuf, 15);
-    setupPortalParams(wm, latParam, lonParam);
+    g_latParam.setValue(latBuf, 15);
+    g_lonParam.setValue(lonBuf, 15);
+}
+
+// Boot Wi-Fi: try saved/seed creds; if they fail, autoConnect opens the portal in
+// the background. Non-blocking, so this returns immediately either way and setup()
+// proceeds; g_portalActive tracks whether the portal is up.
+void connectWifi() {
+    refreshPortalLatLon();
 
     // Seed: with no stored credentials, persist config.h creds so autoConnect
     // tries them before falling back to the portal.
@@ -390,23 +512,18 @@ void connectWifi() {
     }
 
     WiFi.setAutoReconnect(true);
-    wm.autoConnect("FlightRadar-Setup");
-    Serial.println(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString()
-                                                 : "WiFi not connected");
+    bool connected = g_wm.autoConnect("FlightRadar-Setup");  // non-blocking
+    g_portalActive = !connected;                             // portal up if not connected
+    Serial.println(connected ? WiFi.localIP().toString() : "WiFi portal open");
 }
 
-// Reopen the setup portal on demand (long-press). Blocks loop() while active.
+// Reopen the setup portal on demand (long-press). Non-blocking: loop() services it
+// via g_wm.process(), so BLE provisioning still works while it's open.
 void startPortalOnDemand() {
-    WiFiManager wm;
-    wm.setConfigPortalTimeout(180);
-    char latBuf[16], lonBuf[16];
-    std::snprintf(latBuf, sizeof(latBuf), "%.4f", g_obsLat);
-    std::snprintf(lonBuf, sizeof(lonBuf), "%.4f", g_obsLon);
-    WiFiManagerParameter latParam("lat", "Observer latitude", latBuf, 15);
-    WiFiManagerParameter lonParam("lon", "Observer longitude", lonBuf, 15);
-    setupPortalParams(wm, latParam, lonParam);
+    refreshPortalLatLon();
     drawSetupScreen();
-    wm.startConfigPortal("FlightRadar-Setup");
+    g_wm.startConfigPortal("FlightRadar-Setup");   // non-blocking, returns now
+    g_portalActive = true;
 }
 
 void drawRadar() {
@@ -616,6 +733,33 @@ void enterPhotoView() {
     if (g_idx >= g_cache.size()) g_idx = 0;
     const Aircraft& ac = g_cache[g_idx];
     if (WiFi.status() != WL_CONNECTED) {
+        // BLE photo path: the phone (which has internet) fetches + streams it.
+        // Requires a connected central and the photo characteristic.
+        if (g_source == SRC_BLE && g_bleServer && g_bleServer->getConnectedCount() > 0
+            && g_photoBleChar && g_blePhotoBuf) {
+            std::string key = ac.registration.empty() ? ac.hex : ac.registration;
+            if (!key.empty()) {
+                g_blePhotoReqId++;                 // new request; invalidates stale streams
+                g_blePhotoExpected = 0;
+                g_blePhotoGot = 0;
+                g_blePhotoReady = false;
+                g_blePhotoNone = false;
+                g_blePhotoCredit[0] = '\0';
+                strlcpy(g_blePhotoKey, key.c_str(), sizeof(g_blePhotoKey));
+                uint8_t reqBuf[PHOTOBLE_REQ_MAX];
+                size_t rn = buildPhotoReq(reqBuf, g_blePhotoReqId, key);
+                if (rn) { g_photoBleChar->setValue(reqBuf, rn); g_photoBleChar->notify(); }
+                // Same loading + identity state the Wi-Fi path uses.
+                g_photoReady = false;
+                strlcpy(g_photoReqKey, key.c_str(), sizeof(g_photoReqKey));
+                g_photoLoading = true;
+                g_photoPx = nullptr;
+                g_photoMsgUntil = 0;
+                g_blePhotoDeadline = millis() + BLE_PHOTO_TIMEOUT_MS;
+                g_view = PHOTO;
+                return;
+            }
+        }
         flashPhotoMsg("No Wi-Fi");
         drainTouch();
         return;
@@ -624,8 +768,19 @@ void enterPhotoView() {
     // be reading the request buffers — never overwrite them mid-read. The user
     // just re-swipes once the previous fetch drains (≤3 s).
     if (g_photoReq) return;
+    // Discard any completed-but-unconsumed result from the PREVIOUS aircraft's
+    // fetch: we only reach here with g_photoReq clear, i.e. the prior fetch
+    // already finished and may have left g_photoReady set. If we didn't drop it,
+    // loop() would paint that stale photo onto this new aircraft's view before
+    // the fresh fetch lands ("shows the previous aircraft" bug).
+    g_photoReady = false;
     strlcpy(g_photoReqReg, ac.registration.c_str(), sizeof(g_photoReqReg));
     strlcpy(g_photoReqHex, ac.hex.c_str(), sizeof(g_photoReqHex));
+    // Identity of the aircraft we're now waiting on; the consume in loop() applies
+    // a result only if g_photoResKey matches this.
+    strlcpy(g_photoReqKey,
+            ac.registration.empty() ? ac.hex.c_str() : ac.registration.c_str(),
+            sizeof(g_photoReqKey));
     g_photoReq = true;
     g_photoLoading = true;
     g_photoPx = nullptr;
@@ -767,6 +922,7 @@ void sendScanResults(const std::vector<ScanNet>& nets) {
 // Returns true on success; never allocates or frees memory.
 bool httpsGetToBuf(const char* url, uint8_t* buf, size_t maxLen, size_t* outLen) {
     WiFiClientSecure client; client.setInsecure();
+    client.setHandshakeTimeout(TLS_HANDSHAKE_TIMEOUT_S);
     HTTPClient http; http.begin(client, url);
     http.setUserAgent(PHOTO_UA);
     http.setConnectTimeout(2500); http.setTimeout(4000);
@@ -805,6 +961,42 @@ void photoCacheInsert(const std::string& key, uint16_t* px, const std::string& p
     slot->photographer = photographer; slot->lastUse = millis();
 }
 
+// Decode a baseline JPEG in `buf` (len bytes) into a fresh PSRAM 240x240 RGB565
+// frame, insert it into the LRU cache under `key`, and return it. Undecodable
+// images are negative-cached. netTask-only (owns g_jpeg + the cache). Shared by
+// the Wi-Fi fetch and the BLE photo-receive path.
+PhotoResult decodeJpegToCache(const uint8_t* buf, size_t len,
+                              const std::string& key, const std::string& credit) {
+    PhotoResult res;
+    uint16_t* px = (uint16_t*)heap_caps_malloc(240 * 240 * 2, MALLOC_CAP_SPIRAM);
+    if (!px) return res;
+    std::memset(px, 0, 240 * 240 * 2);   // black letterbox margins
+    if (g_jpeg.openRAM((uint8_t*)buf, (int)len, photoDrawCb)) {
+        int d = pickJpegScale(g_jpeg.getWidth(), g_jpeg.getHeight());
+        int opt = (d == 8) ? JPEG_SCALE_EIGHTH
+                : (d == 4) ? JPEG_SCALE_QUARTER
+                : (d == 2) ? JPEG_SCALE_HALF : 0;
+        g_decTarget = px;
+        g_decOffX = cropOffset(g_jpeg.getWidth() / d);
+        g_decOffY = cropOffset(g_jpeg.getHeight() / d);
+        g_jpeg.setPixelType(RGB565_LITTLE_ENDIAN);
+        int ok = g_jpeg.decode(0, 0, opt);
+        g_jpeg.close();
+        g_decTarget = nullptr;
+        if (ok) {
+            photoCacheInsert(key, px, credit);
+            res.ok = true; res.px = px; res.photographer = credit;
+        } else {
+            heap_caps_free(px);
+            g_photoMiss[key] = true;
+        }
+    } else {
+        heap_caps_free(px);
+        g_photoMiss[key] = true;
+    }
+    return res;
+}
+
 // Blocking lookup+fetch+decode (~1-3 s) — deliberate one-shot user action,
 // same acceptance as the 12 s provisioning block. Cache hits return instantly.
 PhotoResult fetchPhoto(const Aircraft& ac) {
@@ -833,6 +1025,7 @@ PhotoResult fetchPhoto(const Aircraft& ac) {
     String jsonBody;
     {
         WiFiClientSecure client; client.setInsecure();
+        client.setHandshakeTimeout(TLS_HANDSHAKE_TIMEOUT_S);
         HTTPClient http; http.begin(client, url);
         http.setUserAgent(PHOTO_UA);
         http.setConnectTimeout(2500); http.setTimeout(4000);
@@ -854,35 +1047,7 @@ PhotoResult fetchPhoto(const Aircraft& ac) {
     // which JPEGDEC can't really decode (see buildProxiedPhotoUrl).
     std::string imgUrl = buildProxiedPhotoUrl(meta.url);
     if (!httpsGetToBuf(imgUrl.c_str(), g_photoDlBuf, PHOTO_DL_MAX, &ilen)) return res;  // transient network failure: don't negative-cache
-
-    uint16_t* px = (uint16_t*)heap_caps_malloc(240 * 240 * 2, MALLOC_CAP_SPIRAM);
-    if (!px) return res;
-    std::memset(px, 0, 240 * 240 * 2);  // black letterbox margins
-
-    if (g_jpeg.openRAM(g_photoDlBuf, (int)ilen, photoDrawCb)) {
-        int d = pickJpegScale(g_jpeg.getWidth(), g_jpeg.getHeight());
-        int opt = (d == 8) ? JPEG_SCALE_EIGHTH
-                : (d == 4) ? JPEG_SCALE_QUARTER
-                : (d == 2) ? JPEG_SCALE_HALF : 0;
-        g_decTarget = px;
-        g_decOffX = cropOffset(g_jpeg.getWidth() / d);
-        g_decOffY = cropOffset(g_jpeg.getHeight() / d);
-        g_jpeg.setPixelType(RGB565_LITTLE_ENDIAN);
-        int ok = g_jpeg.decode(0, 0, opt);
-        g_jpeg.close();
-        g_decTarget = nullptr;
-        if (ok) {
-            photoCacheInsert(key, px, meta.photographer);
-            res.ok = true; res.px = px; res.photographer = meta.photographer;
-        } else {
-            heap_caps_free(px);
-            g_photoMiss[key] = true;  // undecodable image: don't retry each tap
-        }
-    } else {
-        heap_caps_free(px);
-        g_photoMiss[key] = true;
-    }
-    return res;
+    return decodeJpegToCache(g_photoDlBuf, ilen, key, meta.photographer);
 }
 
 // Apply a received Wi-Fi provisioning packet: parse, join, persist, report.
@@ -890,6 +1055,8 @@ PhotoResult fetchPhoto(const Aircraft& ac) {
 void applyWifiConfig() {
     WifiConfig cfg = parseWifiConfig(g_wifiCfgBuf, g_wifiCfgLen);
     if (!cfg.ok) { notifyWifiStatus(2, "bad config"); return; }
+    // Tear down the captive-portal AP (if open) for a clean STA connect.
+    if (g_portalActive) { g_wm.stopConfigPortal(); g_portalActive = false; }
     tft.fillScreen(TFT_BLACK);
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(TFT_CYAN, TFT_BLACK);
@@ -904,6 +1071,9 @@ void applyWifiConfig() {
         notifyWifiStatus(1, WiFi.localIP().toString());
     } else {
         notifyWifiStatus(2, "connect failed");
+        // Don't lock the user out — reopen the (non-blocking) portal so they can
+        // retry over BLE or via the browser.
+        startPortalOnDemand();
     }
 }
 
@@ -918,6 +1088,8 @@ void setup() {
     ledcWrite(0, BL_FULL);
     fb.setColorDepth(16);
     if (!fb.createSprite(240, 240)) Serial.println("sprite alloc failed");
+    g_blePhotoBuf = (uint8_t*)heap_caps_malloc(BLE_PHOTO_MAX, MALLOC_CAP_SPIRAM);
+    if (!g_blePhotoBuf) Serial.println("ble photo buf alloc failed");
     touch.begin();
     // Restore the saved display range (default 50 km = index 1) + observer location.
     {
@@ -937,7 +1109,8 @@ void setup() {
 
     NimBLEDevice::init(BLE_DEVICE_NAME);
     NimBLEDevice::setMTU(517);
-    NimBLEServer* bleServer = NimBLEDevice::createServer();
+    g_bleServer = NimBLEDevice::createServer();
+    NimBLEServer* bleServer = g_bleServer;
     NimBLEService* bleSvc = bleServer->createService(BLE_SERVICE_UUID);
     NimBLECharacteristic* bleCh = bleSvc->createCharacteristic(
         BLE_CHAR_UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
@@ -950,6 +1123,10 @@ void setup() {
         BLE_WIFISCAN_UUID,
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY);
     g_wifiScanChar->setCallbacks(new WifiScanCallbacks());
+    g_photoBleChar = bleSvc->createCharacteristic(
+        BLE_PHOTO_UUID,
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY);
+    g_photoBleChar->setCallbacks(new PhotoBleCallbacks());
     bleSvc->start();
     NimBLEAdvertising* bleAdv = NimBLEDevice::getAdvertising();
     bleAdv->addServiceUUID(BLE_SERVICE_UUID);
@@ -960,6 +1137,7 @@ void setup() {
     tft.setTextColor(TFT_GREEN, TFT_BLACK);
     tft.drawString("WiFi...", CX, CY, 4);
 
+    wmInit();
     connectWifi();
     // First poll comes from netTask within ~2 s of boot.
     xTaskCreatePinnedToCore(netTask, "net", 12288, nullptr, 1, nullptr, 0);
@@ -969,6 +1147,11 @@ void setup() {
 
 void loop() {
     unsigned long now = millis();
+    // Drive the non-blocking captive portal. process() returns false once the
+    // portal has closed (creds saved + connected, or the 180 s timeout elapsed).
+    if (g_portalActive) {
+        if (!g_wm.process()) g_portalActive = false;
+    }
     if (g_blePacketReady) {
         g_blePacketReady = false;
         BlePacket pkt = parseBlePacket(g_bleBuf, g_bleLen, MAX_AIRCRAFT, HIDE_GROUND_AIRCRAFT);
@@ -991,8 +1174,13 @@ void loop() {
     }
     if (g_photoReady) {
         g_photoReady = false;
-        if (g_view == PHOTO && g_photoLoading) {
+        __sync_synchronize();   // acquire: pair with netTask's release; result fields now valid
+        // Only apply a result that belongs to the aircraft this view is waiting on.
+        // A late/mismatched result (e.g. the previous aircraft's) is discarded.
+        bool matches = (strcmp((const char*)g_photoResKey, g_photoReqKey) == 0);
+        if (g_view == PHOTO && g_photoLoading && matches) {
             g_photoLoading = false;
+            g_blePhotoDeadline = 0;
             if (g_photoResOk) {
                 g_photoPx = g_photoResPx;
                 g_photoCredit = (const char*)g_photoResCredit;
@@ -1000,7 +1188,15 @@ void loop() {
                 g_photoMsgUntil = millis() + 1500;   // "No photo", then back
             }
         }
-        // else: user already left PHOTO — discard the late result.
+        // else: stale / mismatched / late result, or user left PHOTO — discard.
+    }
+    // BLE photo never arrived (phone offline / no photo / lost) → stop "Loading".
+    if (g_blePhotoDeadline && millis() > g_blePhotoDeadline) {
+        g_blePhotoDeadline = 0;
+        if (g_view == PHOTO && g_photoLoading) {
+            g_photoLoading = false;
+            g_photoMsgUntil = millis() + 1500;   // "No photo"
+        }
     }
     if (g_wifiCfgReady) {
         g_wifiCfgReady = false;
@@ -1059,9 +1255,13 @@ void loop() {
     uint8_t want = (millis() - g_lastTouch >= BL_DIM_MS) ? BL_DIM : BL_FULL;
     if (want != g_blLevel) { g_blLevel = want; ledcWrite(0, want); }
 
-    if (g_view == RADAR) drawRadar();
-    else if (g_view == DETAIL) drawDetail();
-    else drawPhoto();
+    // While the setup portal is open and Wi-Fi isn't connected yet, keep the SETUP
+    // screen on display (drawn when the portal opened) and skip the normal views.
+    if (!(g_portalActive && WiFi.status() != WL_CONNECTED)) {
+        if (g_view == RADAR) drawRadar();
+        else if (g_view == DETAIL) drawDetail();
+        else drawPhoto();
+    }
     delay(16); // ~60 fps cap
 }
 #endif // ARDUINO

@@ -1,5 +1,8 @@
 import 'dart:async';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:http/http.dart' as http;
+import '../packet/photo_ble_packet.dart';
+import '../data/photo_client.dart';
 
 enum BleStatus { idle, scanning, connecting, connected, disconnected }
 
@@ -8,12 +11,17 @@ enum BleStatus { idle, scanning, connecting, connected, disconnected }
 class BleManager {
   static final Guid serviceUuid = Guid('f1a90001-7e1d-4c2a-9b3f-1a2b3c4d5e6f');
   static final Guid charUuid = Guid('f1a90002-7e1d-4c2a-9b3f-1a2b3c4d5e6f');
+  static final Guid photoUuid = Guid('f1a90005-7e1d-4c2a-9b3f-1a2b3c4d5e6f');
 
   final _statusController = StreamController<BleStatus>.broadcast();
   Stream<BleStatus> get status => _statusController.stream;
 
   BluetoothDevice? _device;
   BluetoothCharacteristic? _char;
+  BluetoothCharacteristic? _photoChar;
+  StreamSubscription<List<int>>? _photoSub;
+  final PhotoClient _photoClient = PhotoClient();
+  final http.Client _http = http.Client();
   StreamSubscription<List<ScanResult>>? _scanSub;
   StreamSubscription<BluetoothConnectionState>? _connSub;
   bool _wantConnected = false;
@@ -61,10 +69,12 @@ class BleManager {
       );
       final services = await device.discoverServices();
       _char = null;
+      _photoChar = null;
       for (final s in services) {
         if (s.uuid == serviceUuid) {
           for (final c in s.characteristics) {
             if (c.uuid == charUuid) _char = c;
+            if (c.uuid == photoUuid) _photoChar = c;
           }
         }
       }
@@ -92,6 +102,7 @@ class BleManager {
         }
       });
       _set(BleStatus.connected);
+      await _subscribePhoto();
     } catch (_) {
       _set(BleStatus.disconnected);
       if (_wantConnected) await _scanAndConnect();
@@ -110,10 +121,61 @@ class BleManager {
     }
   }
 
+  Future<void> _subscribePhoto() async {
+    final pc = _photoChar;
+    if (pc == null) return; // older firmware without the photo characteristic
+    try {
+      await _photoSub?.cancel();
+      await pc.setNotifyValue(true);
+      _photoSub = pc.onValueReceived.listen((bytes) {
+        final req = parsePhotoReq(bytes);
+        if (req != null) _servePhoto(req); // fire-and-forget
+      });
+    } catch (_) {/* photo feature stays off this session */}
+  }
+
+  // Fetch the requested aircraft's photo and stream it back. The device key is a
+  // registration or a hex; try it as both (reg first, then hex).
+  Future<void> _servePhoto(PhotoReq req) async {
+    final pc = _photoChar;
+    if (pc == null) return;
+    try {
+      final ref = await _photoClient.lookup(reg: req.key, hex: req.key);
+      if (ref == null) {
+        await pc.write(buildPhotoHeader(req.reqId, 0, ''), withoutResponse: false);
+        return;
+      }
+      final url = buildProxiedPhotoUrl(ref.thumbUrl, quality: 55);
+      final resp =
+          await _http.get(Uri.parse(url)).timeout(const Duration(seconds: 10));
+      if (resp.statusCode != 200 || resp.bodyBytes.isEmpty) {
+        await pc.write(buildPhotoHeader(req.reqId, 0, ''), withoutResponse: false);
+        return;
+      }
+      final jpeg = resp.bodyBytes;
+      await pc.write(
+          buildPhotoHeader(req.reqId, jpeg.length, ref.photographer),
+          withoutResponse: false);
+      // Conservative payload from the negotiated MTU (ATT 3 + our 6-byte header).
+      final device = _device;
+      final mtu = device?.mtuNow ?? 23;
+      final payload = (mtu - 9).clamp(20, 500);
+      for (final frame in chunkJpeg(req.reqId, jpeg, payload)) {
+        await pc.write(frame, withoutResponse: false); // ordered + flow-controlled
+      }
+    } catch (_) {
+      try {
+        await pc.write(buildPhotoHeader(req.reqId, 0, ''), withoutResponse: false);
+      } catch (_) {}
+    }
+  }
+
   Future<void> stop() async {
     _wantConnected = false;
     await _scanSub?.cancel();
     await _connSub?.cancel();
+    await _photoSub?.cancel();
+    _photoChar = null;
     try { await FlutterBluePlus.stopScan(); } catch (_) {}
     try { await _device?.disconnect(); } catch (_) {}
     _char = null;

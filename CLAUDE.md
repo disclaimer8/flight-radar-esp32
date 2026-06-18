@@ -71,6 +71,15 @@ Config + secrets in `src/config.h` (copy from `config.example.h`; gitignored).
   notifies one `"WN"` record per network (deduped by SSID, sorted by RSSI desc, cap 15,
   hidden SSIDs dropped). Single-radio caveat: scanning briefly stalls the HTTPS poll.
   See `src/wifi_scan_core.h`.
+- A **fourth GATT characteristic** (`f1a90005`, WRITE+NOTIFY) carries **photos over
+  BLE** (pull): in BLE mode a swipe-up NOTIFYs a `PR` request (`'P','R',ver,reqId,
+  keyLen,key`); the companion app fetches the wsrv.nl-proxied extra-compressed
+  240×240 baseline JPEG and WRITEs back a `PH` header (total len + photographer)
+  then `PD` chunks; the callback buffers into a PSRAM scratch and netTask decodes
+  via the shared `decodeJpegToCache` helper, publishing through the same
+  `g_photoReq/ResKey` + memory-barrier handoff as the Wi-Fi path. `reqId` drops
+  stale streams; loop times out after 8 s → "No photo". Wire: `src/photo_ble_core.h`
+  (host-tested) + Dart mirror `companion/lib/packet/photo_ble_packet.dart`.
 - Range presets (25/50/100 km) are stored in NVS (`rangeIdx`); swipe up/down zooms,
   long-press reopens the captive portal. Out-of-range traffic appears as rim dots.
 - BLE is fallback-only: used when Wi-Fi is down AND last packet ≤ `BLE_FRESHNESS_MS`
