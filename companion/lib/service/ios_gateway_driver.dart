@@ -52,7 +52,7 @@ class IosGatewayDriver {
       // Feed the cached stream position; if none yet, runCycle falls back to a
       // one-shot fix internally.
       _timer = Timer.periodic(
-          const Duration(seconds: 10), (_) => engine.runCycle(providedFix: _lastFix));
+          const Duration(seconds: 15), (_) => engine.runCycle(providedFix: _lastFix));
       return true;
     } catch (_) {
       await stop(); // tear down the partial state

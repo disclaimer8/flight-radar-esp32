@@ -86,22 +86,19 @@ class GatewayEngine {
     _fix = '${fix.lat.toStringAsFixed(4)}, ${fix.lon.toStringAsFixed(4)}';
     try {
       final aircraft = await _client.fetchNearby(fix.lat, fix.lon, kRadiusNm);
-      // Parallel route lookups: all callsigns are requested concurrently instead
-      // of awaiting each serially (cold cache with N aircraft = N×RTT → 1×RTT).
-      // RouteClient caches by callsign; duplicate callsigns in one batch may
-      // double-fetch on a cold cache (rare), which is acceptable.
-      final routes = await Future.wait(
-        aircraft.map((a) => _routes.lookup(a.callsign)),
-      );
+      // Feed-first: enrich only with ALREADY-cached routes (no network on the
+      // critical path) so a slow hexdb.io lookup can never stall the BLE send.
+      // The cache is warmed in the background below, so routes appear next cycle.
       final enriched = <Aircraft>[];
-      for (var i = 0; i < aircraft.length; i++) {
-        final a = aircraft[i];
-        final (o, d) = routes[i];
+      for (final a in aircraft) {
         // Reuse distKm already computed by AirplanesClient (single-pass haversine).
         // Fall back to computing it here if the client didn't set it (foreign data).
         final dist = a.distKm ?? haversineKm(fix.lat, fix.lon, a.lat, a.lon);
         var e = a.copyWith(distKm: dist);
-        if (o.isNotEmpty) e = e.copyWith(origin: o, dest: d);
+        final cached = _routes.peek(a.callsign);
+        if (cached != null && cached.$1.isNotEmpty) {
+          e = e.copyWith(origin: cached.$1, dest: cached.$2);
+        }
         enriched.add(e);
       }
       _lastAircraft = enriched;
@@ -119,6 +116,9 @@ class GatewayEngine {
       final packet = encodePacket(fix.lat, fix.lon, enriched);
       final ok = await _ble.sendPacket(packet);
       if (ok) _count = aircraft.length;
+
+      // Warm the route cache off the critical path for next cycle's enrichment.
+      unawaited(_routes.warm(aircraft.map((a) => a.callsign)));
     } catch (_) {
       // offline / fetch failed: skip the send so we don't refresh the device's
       // freshness window (let it fall back to NO LINK if truly offline).

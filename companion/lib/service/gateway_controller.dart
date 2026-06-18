@@ -38,7 +38,9 @@ class GatewayController {
       ),
       iosNotificationOptions: const IOSNotificationOptions(),
       foregroundTaskOptions: ForegroundTaskOptions(
-        eventAction: ForegroundTaskEventAction.repeat(10000),
+        // 15 s stays comfortably inside the device's 30 s BLE freshness window
+        // while ~33% fewer wakeups than 10 s (battery) — no UX loss.
+        eventAction: ForegroundTaskEventAction.repeat(15000),
         autoRunOnBoot: false,
       ),
     );

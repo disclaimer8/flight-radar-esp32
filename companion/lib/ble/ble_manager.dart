@@ -24,7 +24,10 @@ class BleManager {
   final http.Client _http = http.Client();
   StreamSubscription<List<ScanResult>>? _scanSub;
   StreamSubscription<BluetoothConnectionState>? _connSub;
+  StreamSubscription<bool>? _isScanningSub;
   bool _wantConnected = false;
+  bool _reconnecting = false;
+  Duration _backoff = Duration.zero; // grows 5→10→…→60 s between failed attempts
 
   BleStatus _status = BleStatus.idle;
   void _set(BleStatus s) {
@@ -33,10 +36,40 @@ class BleManager {
   }
   BleStatus get current => _status;
 
-  /// Begin scanning + connecting; keeps trying until [stop] is called.
+  /// Begin scanning + connecting; keeps trying (with backoff) until [stop].
   Future<void> start() async {
     _wantConnected = true;
+    _backoff = Duration.zero;
+    // A scan that ends without finding the device (powered off / out of range)
+    // would otherwise leave us idle forever. Retry with backoff so we don't
+    // tight-loop the radio when the device isn't there.
+    await _isScanningSub?.cancel();
+    _isScanningSub = FlutterBluePlus.isScanning.listen((scanning) {
+      if (!scanning && _wantConnected && _status == BleStatus.scanning) {
+        _scheduleReconnect();
+      }
+    });
     await _scanAndConnect();
+  }
+
+  void _bumpBackoff() {
+    if (_backoff == Duration.zero) {
+      _backoff = const Duration(seconds: 5);
+    } else {
+      final next = _backoff.inSeconds * 2;
+      _backoff = Duration(seconds: next > 60 ? 60 : next);
+    }
+  }
+
+  /// Single-flight, backed-off reconnect — collapses overlapping triggers
+  /// (connect failure / disconnect / empty scan) into one pending attempt.
+  Future<void> _scheduleReconnect() async {
+    if (!_wantConnected || _reconnecting) return;
+    _reconnecting = true;
+    _bumpBackoff();
+    await Future.delayed(_backoff);
+    _reconnecting = false;
+    if (_wantConnected) await _scanAndConnect();
   }
 
   Future<void> _scanAndConnect() async {
@@ -48,6 +81,8 @@ class BleManager {
     _scanSub = FlutterBluePlus.onScanResults.listen((results) async {
       if (results.isEmpty) return;
       final r = results.first;
+      _set(BleStatus.connecting); // before stopScan, so the isScanning=false
+                                  // listener doesn't mistake this for an empty scan
       await FlutterBluePlus.stopScan();
       await _scanSub?.cancel();
       await _connect(r.device);
@@ -86,7 +121,7 @@ class BleManager {
       // wrong firmware. Disconnect and retry the scan rather than wedging.
       if (_char == null) {
         await device.disconnect();
-        if (_wantConnected) await _scanAndConnect();
+        if (_wantConnected) await _scheduleReconnect();
         return;
       }
 
@@ -98,14 +133,15 @@ class BleManager {
         if (state == BluetoothConnectionState.disconnected) {
           _set(BleStatus.disconnected);
           _char = null;
-          if (_wantConnected) await _scanAndConnect();
+          if (_wantConnected) await _scheduleReconnect();
         }
       });
       _set(BleStatus.connected);
+      _backoff = Duration.zero; // healthy link: reset the backoff ladder
       await _subscribePhoto();
     } catch (_) {
       _set(BleStatus.disconnected);
-      if (_wantConnected) await _scanAndConnect();
+      if (_wantConnected) await _scheduleReconnect();
     }
   }
 
@@ -172,6 +208,9 @@ class BleManager {
 
   Future<void> stop() async {
     _wantConnected = false;
+    _reconnecting = false;
+    _backoff = Duration.zero;
+    await _isScanningSub?.cancel();
     await _scanSub?.cancel();
     await _connSub?.cancel();
     await _photoSub?.cancel();

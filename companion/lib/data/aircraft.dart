@@ -90,3 +90,18 @@ double haversineKm(double lat1, double lon1, double lat2, double lon2) {
 }
 
 double _rad(double deg) => deg * math.pi / 180.0;
+
+/// Initial bearing in degrees (0-360, 0=N) from observer to target.
+double bearingDeg(double lat1, double lon1, double lat2, double lon2) {
+  final dLon = _rad(lon2 - lon1);
+  final y = math.sin(dLon) * math.cos(_rad(lat2));
+  final x = math.cos(_rad(lat1)) * math.sin(_rad(lat2)) -
+      math.sin(_rad(lat1)) * math.cos(_rad(lat2)) * math.cos(dLon);
+  return (math.atan2(y, x) * 180.0 / math.pi + 360.0) % 360.0;
+}
+
+/// 8-point compass label for a bearing (N, NE, E, …).
+String compass8(double bearing) {
+  const pts = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+  return pts[(((bearing % 360) / 45).round()) % 8];
+}

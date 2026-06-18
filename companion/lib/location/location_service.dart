@@ -30,10 +30,13 @@ class GeolocatorLocationService implements LocationService {
   @override
   Future<GpsFix?> currentFix() async {
     try {
+      // medium (not high): a ~500 m fix is plenty for a 50 nm query radius, and
+      // a full GNSS fix every cycle in a foreground service is the app's #1
+      // battery cost. Mirrors the iOS keep-alive's medium accuracy.
       final pos = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
-          timeLimit: Duration(seconds: 10),
+          accuracy: LocationAccuracy.medium,
+          timeLimit: Duration(seconds: 8),
         ),
       );
       return GpsFix(pos.latitude, pos.longitude);

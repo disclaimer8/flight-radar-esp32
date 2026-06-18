@@ -17,6 +17,7 @@ class PhotoClient {
   // with a contact URL.
   static const _ua =
       'flight-radar-esp32-companion/1.0 (+https://github.com/disclaimer8/flight-radar-esp32)';
+  static const _maxCache = 256; // bound growth over a long session
   final http.Client _http;
   final Map<String, PhotoRef?> _cache = {};
   PhotoClient([http.Client? client]) : _http = client ?? http.Client();
@@ -56,6 +57,7 @@ class PhotoClient {
         }
       }
     } catch (_) {/* leave as a miss */}
+    if (_cache.length >= _maxCache) _cache.clear();
     _cache[cacheKey] = result;
     return result;
   }
