@@ -187,6 +187,16 @@ class PhotoBleCallbacks : public NimBLECharacteristicCallbacks {
     }
 };
 
+// Server-level callbacks. NimBLE 2.x (unlike 1.x) does NOT auto-restart
+// advertising after a disconnect — handled via advertiseOnDisconnect(true) in
+// setup(); here we only abort an in-flight photo stream so a mid-transfer
+// disconnect can't leave the PHOTO view waiting for the full 8 s timeout.
+class RadarServerCallbacks : public NimBLEServerCallbacks {
+    void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override {
+        g_blePhotoExpected = 0;   // chunk callback now drops further frames
+    }
+};
+
 // ---- Aircraft photo pipeline (PHOTO view) ----------------------------------
 // Decoded 240x240 RGB565 photos live in PSRAM (2 MB, otherwise idle): 8 LRU
 // slots ≈ 920 KB + a transient download buffer. SRAM budget is untouched.
@@ -202,6 +212,15 @@ static const char* PHOTO_UA =
     "flight-radar-esp32/1.0 (+https://github.com/disclaimer8/flight-radar-esp32)";
 PhotoSlot g_photoCache[PHOTO_CACHE_SLOTS];
 std::map<std::string, bool> g_photoMiss;  // negative cache (known no-photo), per boot
+
+// Bound the negative cache: in busy airspace it would otherwise grow one
+// std::string key per no-photo aircraft forever (internal RAM, fragmentation
+// over multi-week uptime). Drop it wholesale past a cap (worst case: a few
+// re-fetches). netTask-private — no locking needed.
+static void markPhotoMiss(const std::string& key) {
+    if (g_photoMiss.size() >= 256) g_photoMiss.clear();
+    g_photoMiss[key] = true;
+}
 
 // TLS handshake timeout (SECONDS) for every WiFiClientSecure. The core defaults
 // handshake_timeout to 120 s and setConnectTimeout() does NOT cover it, so a host
@@ -308,9 +327,17 @@ void netPoll() {
     }
 }
 
+// Soft watchdog: netTask stamps this each iteration; loop() reboots if it
+// stops advancing for NET_WATCHDOG_MS (a true wedge), well above any legitimate
+// blocking op (TLS handshake 6 s + photo download 8 s + decode). Avoids the
+// hardware task-WDT's false-reset risk during normal multi-second fetches.
+volatile unsigned long g_netHeartbeat = 0;
+static const unsigned long NET_WATCHDOG_MS = 45000;
+
 void netTask(void*) {
     unsigned long lastPoll = 0;
     for (;;) {
+        g_netHeartbeat = millis();
         if (WiFi.status() == WL_CONNECTED &&
             millis() - lastPoll >= POLL_INTERVAL_MS) {
             lastPoll = millis();
@@ -423,6 +450,9 @@ std::pair<std::string, std::string> lookupRoute(const std::string& callsign) {
         }
     }
     http.end();
+    // Bound growth: callsigns rotate constantly, so this map would grow forever
+    // (internal RAM). Drop wholesale past a cap. netTask-private — no locking.
+    if (g_routeCache.size() >= 256) g_routeCache.clear();
     g_routeCache[callsign] = result;
     return result;
 }
@@ -740,6 +770,7 @@ void enterPhotoView() {
             std::string key = ac.registration.empty() ? ac.hex : ac.registration;
             if (!key.empty()) {
                 g_blePhotoReqId++;                 // new request; invalidates stale streams
+                __sync_synchronize();              // publish new reqId before resetting counters
                 g_blePhotoExpected = 0;
                 g_blePhotoGot = 0;
                 g_blePhotoReady = false;
@@ -988,11 +1019,11 @@ PhotoResult decodeJpegToCache(const uint8_t* buf, size_t len,
             res.ok = true; res.px = px; res.photographer = credit;
         } else {
             heap_caps_free(px);
-            g_photoMiss[key] = true;
+            markPhotoMiss(key);
         }
     } else {
         heap_caps_free(px);
-        g_photoMiss[key] = true;
+        markPhotoMiss(key);
     }
     return res;
 }
@@ -1036,7 +1067,7 @@ PhotoResult fetchPhoto(const Aircraft& ac) {
     if (code != 200) return res;  // transient/HTTP error: retry next entry
     PsPhoto meta = parsePlanespottersPhoto(
         std::string(jsonBody.c_str(), jsonBody.length()));
-    if (!meta.ok) { g_photoMiss[key] = true; return res; }  // confirmed no photo
+    if (!meta.ok) { markPhotoMiss(key); return res; }  // confirmed no photo
 
     if (!g_photoDlBuf) {
         g_photoDlBuf = (uint8_t*)heap_caps_malloc(PHOTO_DL_MAX, MALLOC_CAP_SPIRAM);
@@ -1110,6 +1141,11 @@ void setup() {
     NimBLEDevice::init(BLE_DEVICE_NAME);
     NimBLEDevice::setMTU(517);
     g_bleServer = NimBLEDevice::createServer();
+    g_bleServer->setCallbacks(new RadarServerCallbacks());
+    // NimBLE 2.x dropped 1.x's automatic advertising restart on disconnect;
+    // without this the device is unreachable until reboot after the first
+    // disconnect (breaks BLE provisioning + the GPS-gateway fallback).
+    g_bleServer->advertiseOnDisconnect(true);
     NimBLEServer* bleServer = g_bleServer;
     NimBLEService* bleSvc = bleServer->createService(BLE_SERVICE_UUID);
     NimBLECharacteristic* bleCh = bleSvc->createCharacteristic(
@@ -1140,6 +1176,7 @@ void setup() {
     wmInit();
     connectWifi();
     // First poll comes from netTask within ~2 s of boot.
+    g_netHeartbeat = millis();   // arm the soft watchdog before the task starts
     xTaskCreatePinnedToCore(netTask, "net", 12288, nullptr, 1, nullptr, 0);
     g_lastPoll = millis();
     g_lastTouch = millis();
@@ -1147,6 +1184,11 @@ void setup() {
 
 void loop() {
     unsigned long now = millis();
+    // Soft watchdog: reboot if netTask wedged (no heartbeat for > NET_WATCHDOG_MS).
+    if (now - g_netHeartbeat > NET_WATCHDOG_MS) {
+        Serial.println("netTask wedged — restarting");
+        esp_restart();
+    }
     // Drive the non-blocking captive portal. process() returns false once the
     // portal has closed (creds saved + connected, or the 180 s timeout elapsed).
     if (g_portalActive) {
@@ -1191,7 +1233,7 @@ void loop() {
         // else: stale / mismatched / late result, or user left PHOTO — discard.
     }
     // BLE photo never arrived (phone offline / no photo / lost) → stop "Loading".
-    if (g_blePhotoDeadline && millis() > g_blePhotoDeadline) {
+    if (g_blePhotoDeadline && (long)(millis() - g_blePhotoDeadline) > 0) {
         g_blePhotoDeadline = 0;
         if (g_view == PHOTO && g_photoLoading) {
             g_photoLoading = false;

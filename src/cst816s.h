@@ -28,6 +28,8 @@ public:
         digitalWrite(_rst, HIGH); delay(50);
         pinMode(_int, INPUT_PULLUP);
         Wire.begin(_sda, _scl);
+        Wire.setClock(400000);   // CST816S supports 400 kHz fast-mode
+        Wire.setTimeOut(10);     // ms: a stuck SDA can't hang the render loop
     }
 
     // Returns the current gesture register value (TG_* ), or TG_NONE on I2C error.
