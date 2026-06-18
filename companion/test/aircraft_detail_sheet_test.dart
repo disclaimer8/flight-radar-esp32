@@ -7,6 +7,7 @@ import 'package:flight_radar_companion/data/aircraft.dart';
 import 'package:flight_radar_companion/data/photo_client.dart';
 import 'package:flight_radar_companion/service/gateway_engine.dart'
     show GatewayStatus;
+import 'package:flight_radar_companion/theme/app_theme.dart';
 import 'package:flight_radar_companion/ui/aircraft_detail_sheet.dart';
 
 PhotoClient noPhotos() =>
@@ -25,14 +26,23 @@ const sparse = Aircraft(
 );
 
 Widget host(Aircraft a, Stream<GatewayStatus> status) => MaterialApp(
+      theme: AppTheme.light(),
       home: Scaffold(
         body: AircraftDetailSheet(
             aircraft: a, photos: noPhotos(), status: status, showMap: false),
       ),
     );
 
+// Tall viewport so the lazy ListView builds every field (finders need them).
+void tall(WidgetTester tester) {
+  tester.view.physicalSize = const Size(1200, 4000);
+  tester.view.devicePixelRatio = 1.0;
+  addTearDown(tester.view.reset);
+}
+
 void main() {
   testWidgets('renders every populated field', (tester) async {
+    tall(tester);
     final status = StreamController<GatewayStatus>.broadcast();
     await tester.pumpWidget(host(full, status.stream));
     await tester.pump();
@@ -53,6 +63,7 @@ void main() {
   });
 
   testWidgets('missing values render as a dash', (tester) async {
+    tall(tester);
     final status = StreamController<GatewayStatus>.broadcast();
     await tester.pumpWidget(host(sparse, status.stream));
     await tester.pump();
@@ -65,6 +76,7 @@ void main() {
 
   testWidgets('live update replaces data; disappearance shows signal lost',
       (tester) async {
+    tall(tester);
     final status = StreamController<GatewayStatus>.broadcast();
     await tester.pumpWidget(host(full, status.stream));
     await tester.pump();

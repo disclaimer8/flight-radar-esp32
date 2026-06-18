@@ -1,67 +1,166 @@
 import 'package:flutter/material.dart';
 import '../data/aircraft.dart';
 import '../data/photo_client.dart';
+import '../theme/app_theme.dart';
 
-/// One aircraft row: photo, callsign + badges, type/distance, route, attribution.
+/// One aircraft row: photo (left), callsign + glyph badges, type, route, reg,
+/// and a right-anchored distance + compass-bearing chip (where to look up).
 /// The photo is looked up lazily from [photos] (foreground only).
 class AircraftCard extends StatelessWidget {
   final Aircraft aircraft;
   final PhotoClient photos;
   final VoidCallback? onTap;
-  const AircraftCard(
-      {super.key, required this.aircraft, required this.photos, this.onTap});
+  final double? observerLat;
+  final double? observerLon;
+  const AircraftCard({
+    super.key,
+    required this.aircraft,
+    required this.photos,
+    this.onTap,
+    this.observerLat,
+    this.observerLon,
+  });
 
   bool get _hasRoute =>
       (aircraft.origin ?? '').isNotEmpty &&
       (aircraft.dest ?? '').isNotEmpty &&
       aircraft.origin != aircraft.dest;
 
+  String? get _bearingLabel {
+    if (observerLat == null || observerLon == null) return null;
+    final b = bearingDeg(observerLat!, observerLon!, aircraft.lat, aircraft.lon);
+    return compass8(b);
+  }
+
   @override
   Widget build(BuildContext context) {
     final cs = aircraft.callsign.isEmpty ? '------' : aircraft.callsign;
     final subtitle = aircraft.desc.isNotEmpty ? aircraft.desc : aircraft.type;
-    final dist = aircraft.distKm == null ? '' : ' · ${aircraft.distKm!.round()} km';
-    final reg = (aircraft.registration ?? '');
+    final reg = aircraft.registration ?? '';
+    final ac = Theme.of(context).extension<AppColors>()!;
+    final scheme = Theme.of(context).colorScheme;
 
     return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
       child: InkWell(
         onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.all(8),
+          padding: const EdgeInsets.all(10),
           child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               _PhotoBox(reg: reg, hex: aircraft.hex, photos: photos),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
                   children: [
                     Row(children: [
-                      Flexible(child: Text(cs, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
+                      Flexible(
+                        child: Text(cs,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: AppTheme.callsign(context, size: 18)),
+                      ),
                       const SizedBox(width: 8),
-                      if (aircraft.isEmergency) _badge('EMG', Colors.red),
-                      if (aircraft.isMilitary) _badge('MIL', Colors.green.shade700),
+                      if (aircraft.isEmergency)
+                        _Badge(label: 'EMG', icon: Icons.warning_amber_rounded, color: ac.emg),
+                      if (aircraft.isMilitary)
+                        _Badge(label: 'MIL', icon: Icons.shield_rounded, color: ac.mil),
                     ]),
-                    Text('$subtitle$dist', maxLines: 1, overflow: TextOverflow.ellipsis),
-                    if (_hasRoute) Text('${aircraft.origin} → ${aircraft.dest}', maxLines: 1, overflow: TextOverflow.ellipsis),
-                    if (reg.isNotEmpty) Text(reg, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    if (subtitle.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Text(subtitle,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(fontSize: 13, color: ac.muted)),
+                      ),
+                    if (_hasRoute)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Text.rich(TextSpan(children: [
+                          TextSpan(text: '${aircraft.origin} '),
+                          TextSpan(text: '→', style: TextStyle(color: ac.accent)),
+                          TextSpan(text: ' ${aircraft.dest}'),
+                        ]), maxLines: 1, overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 14)),
+                      ),
+                    if (reg.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Text(reg, style: TextStyle(fontSize: 12, color: ac.muted)),
+                      ),
                   ],
                 ),
               ),
+              const SizedBox(width: 8),
+              if (aircraft.distKm != null)
+                _DistanceChip(
+                  km: aircraft.distKm!,
+                  bearing: _bearingLabel,
+                  accent: scheme.primary,
+                  muted: ac.muted,
+                ),
             ],
           ),
         ),
       ),
     );
   }
+}
 
-  Widget _badge(String text, Color color) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-        decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(4)),
-        child: Text(text, style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
-      );
+class _DistanceChip extends StatelessWidget {
+  final double km;
+  final String? bearing;
+  final Color accent;
+  final Color muted;
+  const _DistanceChip(
+      {required this.km, required this.bearing, required this.accent, required this.muted});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text.rich(TextSpan(children: [
+          TextSpan(text: '${km.round()}',
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, color: accent)),
+          TextSpan(text: ' km', style: TextStyle(fontSize: 12, color: muted)),
+        ])),
+        if (bearing != null)
+          Text(bearing!,
+              style: TextStyle(fontSize: 12, color: muted, fontWeight: FontWeight.w600)),
+      ],
+    );
+  }
+}
+
+class _Badge extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final Color color;
+  const _Badge({required this.label, required this.icon, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    // Glyph + label so meaning never depends on color alone (color-blind safe).
+    return Semantics(
+      label: label == 'EMG' ? 'Emergency' : 'Military',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(6)),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, size: 12, color: Colors.white),
+          const SizedBox(width: 3),
+          Text(label,
+              style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700)),
+        ]),
+      ),
+    );
+  }
 }
 
 class _PhotoBox extends StatefulWidget {
@@ -93,35 +192,41 @@ class _PhotoBoxState extends State<_PhotoBox> {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      width: 80,
-      height: 60,
-      child: FutureBuilder<PhotoRef?>(
-        future: _future,
-        builder: (context, snap) {
-          final photo = snap.data;
-          if (photo == null) {
-            return Container(
-              color: Colors.black12,
-              alignment: Alignment.center,
-              child: const Icon(Icons.flight, color: Colors.black38),
-            );
-          }
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Expanded(
-                child: Image.network(photo.thumbUrl, fit: BoxFit.cover,
-                    cacheWidth: 160, // decode at ~2x box size, not full source res
-                    errorBuilder: (_, _, _) => Container(
-                        color: Colors.black12,
-                        child: const Icon(Icons.flight, color: Colors.black38))),
+    final ac = Theme.of(context).extension<AppColors>()!;
+    final fill = Theme.of(context).colorScheme.surfaceContainerHighest;
+    Widget placeholder() => Container(
+          color: fill,
+          alignment: Alignment.center,
+          child: Icon(Icons.flight, color: ac.muted),
+        );
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(10),
+      child: SizedBox(
+        width: 112,
+        height: 72,
+        child: FutureBuilder<PhotoRef?>(
+          future: _future,
+          builder: (context, snap) {
+            final photo = snap.data;
+            if (photo == null) return placeholder();
+            return Stack(fit: StackFit.expand, children: [
+              Image.network(photo.thumbUrl, fit: BoxFit.cover,
+                  cacheWidth: 360, // ~2x box width
+                  errorBuilder: (_, _, _) => placeholder()),
+              Positioned(
+                left: 0, right: 0, bottom: 0,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                  color: Colors.black54,
+                  child: Text('© ${photo.photographer}',
+                      maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 11, color: Colors.white)),
+                ),
               ),
-              Text('© ${photo.photographer} / planespotters.net',
-                  style: const TextStyle(fontSize: 7), overflow: TextOverflow.ellipsis),
-            ],
-          );
-        },
+            ]);
+          },
+        ),
       ),
     );
   }

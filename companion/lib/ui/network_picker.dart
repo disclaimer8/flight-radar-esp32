@@ -13,6 +13,12 @@ class NetworkPicker extends StatelessWidget {
     return Icons.wifi_1_bar;
   }
 
+  String _signalWord(int rssi) {
+    if (rssi >= -60) return 'Strong signal';
+    if (rssi >= -75) return 'Good signal';
+    return 'Weak signal';
+  }
+
   @override
   Widget build(BuildContext context) {
     return SafeArea(
@@ -34,7 +40,7 @@ class NetworkPicker extends StatelessWidget {
                 return ListTile(
                   leading: Icon(_signalIcon(n.rssi)),
                   title: Text(n.ssid, maxLines: 1, overflow: TextOverflow.ellipsis),
-                  subtitle: Text('${n.rssi} dBm'),
+                  subtitle: Text(_signalWord(n.rssi)),
                   trailing: n.secured ? const Icon(Icons.lock_outline) : null,
                   onTap: () => Navigator.pop(context, n),
                 );

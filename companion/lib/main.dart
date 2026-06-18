@@ -1,6 +1,7 @@
 import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'theme/app_theme.dart';
 import 'ui/home_screen.dart';
 
 void main() {
@@ -17,7 +18,10 @@ class CompanionApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Flight Radar Companion',
-      theme: ThemeData(colorSchemeSeed: Colors.indigo, useMaterial3: true),
+      debugShowCheckedModeBanner: false,
+      theme: AppTheme.light(),
+      darkTheme: AppTheme.dark(),
+      themeMode: ThemeMode.system,
       home: const WithForegroundTask(child: HomeScreen()),
     );
   }

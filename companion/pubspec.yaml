@@ -1,5 +1,5 @@
 name: flight_radar_companion
-description: "A new Flutter project."
+description: "Flight Radar — see the aircraft flying over you, no subscription."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -43,6 +43,10 @@ dependencies:
   flutter_map: ^8.3.0
   latlong2: ^0.9.1
   flutter_map_cancellable_tile_provider: ^3.1.1
+  share_plus: ^13.1.0
+  geocoding: ^4.0.0
+  path_provider: ^2.1.6
+  shared_preferences: ^2.5.5
 
 dev_dependencies:
   flutter_test:

@@ -16,10 +16,8 @@ class NotificationService {
     );
     await _plugin.initialize(
         settings: const InitializationSettings(android: android, iOS: darwin));
-    await _plugin
-        .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>()
-        ?.requestNotificationsPermission();
+    // Android POST_NOTIFICATIONS is requested once in the UI (HomeScreen) before
+    // start(), so we don't double-prompt from the foreground-service isolate.
     _ready = true;
   }
 

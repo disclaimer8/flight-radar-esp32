@@ -4,7 +4,11 @@ import 'package:http/testing.dart';
 import 'package:http/http.dart' as http;
 import 'package:flight_radar_companion/data/aircraft.dart';
 import 'package:flight_radar_companion/data/photo_client.dart';
+import 'package:flight_radar_companion/theme/app_theme.dart';
 import 'package:flight_radar_companion/ui/aircraft_card.dart';
+
+Widget _wrap(Widget child) =>
+    MaterialApp(theme: AppTheme.light(), home: Scaffold(body: child));
 
 void main() {
   testWidgets('card shows callsign, route, distance, and an emergency badge',
@@ -16,8 +20,7 @@ void main() {
       registration: 'G-XLEA', origin: 'EGLL', dest: 'KJFK',
       hex: '40612a', desc: 'Airbus A380-841', isEmergency: true, distKm: 8.0,
     );
-    await tester.pumpWidget(MaterialApp(
-        home: Scaffold(body: AircraftCard(aircraft: a, photos: photos))));
+    await tester.pumpWidget(_wrap(AircraftCard(aircraft: a, photos: photos)));
     await tester.pump();
 
     expect(find.text('BAW117'), findsOneWidget);
@@ -34,8 +37,7 @@ void main() {
       callsign: 'RRR2745', type: 'A400', lat: 51, lon: -1, altFt: 8000, gsKt: 300,
       onGround: false, hex: '43c123', desc: 'Airbus A400M', isMilitary: true, distKm: 20.0,
     );
-    await tester.pumpWidget(MaterialApp(
-        home: Scaffold(body: AircraftCard(aircraft: a, photos: photos))));
+    await tester.pumpWidget(_wrap(AircraftCard(aircraft: a, photos: photos)));
     await tester.pump();
 
     expect(find.text('RRR2745'), findsOneWidget);
@@ -50,10 +52,8 @@ void main() {
       altFt: 30000, gsKt: 400, onGround: false,
     );
     var tapped = false;
-    await tester.pumpWidget(MaterialApp(
-        home: Scaffold(
-            body: AircraftCard(
-                aircraft: a, photos: photos, onTap: () => tapped = true))));
+    await tester.pumpWidget(_wrap(
+        AircraftCard(aircraft: a, photos: photos, onTap: () => tapped = true)));
     await tester.pump();
     await tester.tap(find.byType(AircraftCard));
     expect(tapped, isTrue);

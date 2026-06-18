@@ -6,13 +6,16 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../ble/wifi_provisioner.dart';
 import '../ble/wifi_scanner.dart';
+import '../data/aircraft.dart';
 import '../data/photo_client.dart';
 import '../packet/wifi_scan_packet.dart';
 import '../service/gateway_controller.dart';
 import '../service/gateway_engine.dart' show GatewayStatus;
+import '../theme/app_theme.dart';
 import 'aircraft_card.dart';
 import 'aircraft_detail_sheet.dart';
 import 'network_picker.dart';
+import 'onboarding.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -41,15 +44,12 @@ class _HomeScreenState extends State<HomeScreen> {
     _sub = _controller.status.listen((s) {
       if (mounted) setState(() => _status = s);
     });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) maybeShowOnboarding(context);
+    });
   }
 
-  /// Request every runtime permission the gateway needs BEFORE start. On Android
-  /// the location|connectedDevice FGS types require Bluetooth AND location granted
-  /// at startForeground time. On iOS, background feeding needs "Always" location
-  /// (requested as When-in-Use first, then escalated). Returns true if the
-  /// required permissions are granted.
-  /// BLE-only permissions for the on-demand provisioning scan/connect (the
-  /// feeder's full permission set isn't needed just to send Wi-Fi creds).
+  /// BLE-only permissions for the on-demand provisioning scan/connect.
   Future<bool> _requestBlePermissions() async {
     if (Platform.isIOS) {
       final bt = await Permission.bluetooth.request();
@@ -62,12 +62,14 @@ class _HomeScreenState extends State<HomeScreen> {
     return statuses.values.every((s) => s.isGranted);
   }
 
+  /// Every runtime permission the gateway needs BEFORE start. Android
+  /// location|connectedDevice FGS types require Bluetooth + location granted at
+  /// startForeground; iOS background feeding needs "Always" location.
   Future<bool> _requestPermissions() async {
     if (Platform.isIOS) {
       final bt = await Permission.bluetooth.request();
       final whenInUse = await Permission.locationWhenInUse.request();
       if (whenInUse.isGranted) {
-        // Background needs "Always"; iOS shows this as a follow-up upgrade prompt.
         final always = await Permission.locationAlways.request();
         if (!always.isGranted && mounted) {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -77,7 +79,8 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       return bt.isGranted && whenInUse.isGranted;
     }
-    // Android.
+    // Android: request notification permission here (the only place) so the
+    // foreground-service isolate doesn't double-prompt.
     final notif = await FlutterForegroundTask.checkNotificationPermission();
     if (notif != NotificationPermission.granted) {
       await FlutterForegroundTask.requestNotificationPermission();
@@ -91,8 +94,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _toggle() async {
-    // Single-central peripheral: never start the feeder while a scan or
-    // provisioning BLE session holds the device.
     if (_provisioning || _scanning) return;
     if (_running) {
       await _controller.stop();
@@ -113,8 +114,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _sendWifi() async {
-    // _scanning guard: scan and provisioning are separate BLE sessions racing
-    // for the same single-central peripheral — never run both.
     if (_ssidCtrl.text.isEmpty || _running || _provisioning || _scanning) return;
     if (!await _requestBlePermissions()) {
       if (mounted) {
@@ -188,128 +187,198 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
+  /// Parse the engine's "lat, lon" fix string into observer coords (for bearing).
+  (double?, double?) _observer() {
+    final parts = _status.fix.split(',');
+    if (parts.length == 2) {
+      final la = double.tryParse(parts[0].trim());
+      final lo = double.tryParse(parts[1].trim());
+      if (la != null && lo != null) return (la, lo);
+    }
+    return (null, null);
+  }
+
+  /// EMG/MIL pinned to top, then nearest-first.
+  List<Aircraft> _sorted() {
+    final list = [..._status.aircraft];
+    list.sort((a, b) {
+      final pa = (a.isEmergency || a.isMilitary) ? 0 : 1;
+      final pb = (b.isEmergency || b.isMilitary) ? 0 : 1;
+      if (pa != pb) return pa - pb;
+      return (a.distKm ?? 1e9).compareTo(b.distKm ?? 1e9);
+    });
+    return list;
+  }
+
   @override
   Widget build(BuildContext context) {
-    // The whole screen is one scroll view: in landscape the fixed status +
-    // Wi-Fi sections alone are taller than the viewport, so a plain Column
-    // overflows.
+    final (obsLat, obsLon) = _observer();
+    final aircraft = _sorted();
     return Scaffold(
-      appBar: AppBar(title: const Text('Flight Radar Companion')),
+      appBar: AppBar(
+        title: const Text('Flight Radar'),
+        actions: [
+          _StatusPill(running: _running, bleState: _status.ble),
+          const SizedBox(width: 12),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: (_provisioning || _scanning) ? null : _toggle,
+        icon: Icon(_running ? Icons.stop_rounded : Icons.play_arrow_rounded),
+        label: Text(_running ? 'Stop' : 'Start'),
+      ),
       body: CustomScrollView(
         slivers: [
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _row('Device', _status.ble),
-                  _row('GPS', _status.fix),
-                  _row('Last packet', '${_status.count} aircraft'),
-                  const SizedBox(height: 12),
-                  SizedBox(
-                    width: double.infinity,
-                    child: FilledButton(
-                      onPressed: (_provisioning || _scanning) ? null : _toggle,
-                      child: Text(_running ? 'Stop' : 'Start feeding device'),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SliverToBoxAdapter(child: Divider(height: 1)),
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(24, 12, 24, 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Configure device Wi-Fi',
-                      style: TextStyle(fontWeight: FontWeight.bold)),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _ssidCtrl,
-                          decoration: const InputDecoration(labelText: 'SSID'),
-                        ),
-                      ),
-                      IconButton(
-                        tooltip: 'Scan networks via device',
-                        onPressed:
-                            (_running || _provisioning || _scanning) ? null : _scanWifi,
-                        icon: _scanning
-                            ? const SizedBox(
-                                width: 20, height: 20,
-                                child: CircularProgressIndicator(strokeWidth: 2))
-                            : const Icon(Icons.wifi_find),
-                      ),
-                    ],
-                  ),
-                  TextField(
-                    controller: _passCtrl,
-                    focusNode: _passFocus,
-                    obscureText: true,
-                    decoration: const InputDecoration(labelText: 'Password'),
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      FilledButton(
-                        onPressed: (_running || _provisioning || _scanning)
-                            ? null
-                            : _sendWifi,
-                        child: const Text('Send to device'),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          _running ? 'Stop feeding to configure device Wi-Fi' : _provStatus,
-                          style: const TextStyle(color: Colors.black54),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SliverToBoxAdapter(child: Divider(height: 1)),
-          if (_status.aircraft.isEmpty)
-            const SliverFillRemaining(
-              hasScrollBody: false,
-              child: Center(
-                  child: Text('Start feeding to see nearby aircraft',
-                      style: TextStyle(color: Colors.black54))),
-            )
+          SliverToBoxAdapter(child: _setupSection(context)),
+          if (aircraft.isEmpty)
+            SliverFillRemaining(hasScrollBody: false, child: _emptyState(context))
           else
-            SliverList.builder(
-              itemCount: _status.aircraft.length,
-              itemBuilder: (context, i) {
-                final a = _status.aircraft[i];
-                return AircraftCard(
-                  key: ValueKey(a.hex),
-                  aircraft: a,
-                  photos: _photos,
-                  onTap: () =>
-                      showAircraftDetail(context, a, _photos, _controller.status),
-                );
-              },
+            SliverPadding(
+              padding: const EdgeInsets.only(top: 4, bottom: 96),
+              sliver: SliverList.builder(
+                itemCount: aircraft.length,
+                itemBuilder: (context, i) {
+                  final a = aircraft[i];
+                  return AircraftCard(
+                    key: ValueKey(a.hex),
+                    aircraft: a,
+                    photos: _photos,
+                    observerLat: obsLat,
+                    observerLon: obsLon,
+                    onTap: () =>
+                        showAircraftDetail(context, a, _photos, _controller.status),
+                  );
+                },
+              ),
             ),
         ],
       ),
     );
   }
 
-  Widget _row(String label, String value) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [Text(label), Text(value, style: const TextStyle(fontWeight: FontWeight.bold))],
+  Widget _emptyState(BuildContext context) {
+    final ac = Theme.of(context).extension<AppColors>()!;
+    final (title, sub) = _running
+        ? ('Quiet skies right now', "We'll buzz you when something flies over ✈")
+        : ('Watch the skies above you', "Tap Start to see what's flying overhead.");
+    return Padding(
+      padding: const EdgeInsets.all(32),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(_running ? Icons.radar : Icons.flight_takeoff, size: 56, color: ac.accent),
+          const SizedBox(height: 16),
+          Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 6),
+          Text(sub, textAlign: TextAlign.center, style: TextStyle(color: ac.muted)),
+        ],
+      ),
+    );
+  }
+
+  Widget _setupSection(BuildContext context) {
+    final ac = Theme.of(context).extension<AppColors>()!;
+    return Theme(
+      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+      child: ExpansionTile(
+        leading: const Icon(Icons.settings_input_antenna),
+        title: const Text('Device Wi-Fi setup'),
+        subtitle: Text('Connect your radar to Wi-Fi over Bluetooth',
+            style: TextStyle(fontSize: 12, color: ac.muted)),
+        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _ssidCtrl,
+                  decoration: const InputDecoration(labelText: 'Wi-Fi name (SSID)'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton.filledTonal(
+                tooltip: 'Scan networks via device',
+                onPressed: (_running || _provisioning || _scanning) ? null : _scanWifi,
+                icon: _scanning
+                    ? const SizedBox(
+                        width: 20, height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.wifi_find),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _passCtrl,
+            focusNode: _passFocus,
+            obscureText: true,
+            decoration: const InputDecoration(labelText: 'Password'),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              FilledButton(
+                onPressed:
+                    (_running || _provisioning || _scanning) ? null : _sendWifi,
+                child: const Text('Send to device'),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  _running ? 'Stop feeding to configure Wi-Fi' : _provStatus,
+                  style: TextStyle(color: ac.muted),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Compact connection state: colored dot + friendly word (no raw enum text).
+class _StatusPill extends StatelessWidget {
+  final bool running;
+  final String bleState;
+  const _StatusPill({required this.running, required this.bleState});
+
+  @override
+  Widget build(BuildContext context) {
+    final ac = Theme.of(context).extension<AppColors>()!;
+    final scheme = Theme.of(context).colorScheme;
+    late final String label;
+    late final Color color;
+    if (!running) {
+      label = 'Off';
+      color = ac.muted;
+    } else if (bleState == 'connected') {
+      label = 'Linked';
+      color = ac.accent;
+    } else if (bleState == 'scanning' || bleState == 'connecting') {
+      label = 'Searching';
+      color = Colors.amber;
+    } else {
+      label = 'No device';
+      color = ac.muted;
+    }
+    return Semantics(
+      label: 'Connection: $label',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(20),
         ),
-      );
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Container(width: 8, height: 8, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+          const SizedBox(width: 6),
+          Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+        ]),
+      ),
+    );
+  }
 }
