@@ -34,11 +34,14 @@ dependencies:
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
-  flutter_blue_plus: ^2.3.5
-  geolocator: ^14.0.2
+  flutter_blue_plus: ^2.3.8
+  geolocator: ^14.0.3
   flutter_foreground_task: ^9.2.2
   http: ^1.6.0
   permission_handler: ^12.0.3
+  # Held at 18.x: 19+ moved initialize()/show() to all-named params (breaking).
+  # Bumping to 22.x needs a code migration + an APK build to re-verify the
+  # Android native wiring (desugaring/minSdk), so it is deferred.
   flutter_local_notifications: ^18.0.1
   flutter_map: ^8.3.0
   latlong2: ^0.9.1
