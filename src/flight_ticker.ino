@@ -93,7 +93,7 @@ volatile size_t g_bleLen = 0;
 volatile bool   g_blePacketReady = false;
 
 class IngestCallbacks : public NimBLECharacteristicCallbacks {
-    void onWrite(NimBLECharacteristic* c) override {
+    void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
         std::string v = c->getValue();
         size_t n = v.size();
         if (n > BLE_MAX_PACKET) n = BLE_MAX_PACKET;
@@ -111,7 +111,7 @@ NimBLECharacteristic* g_wifiCfgChar = nullptr;
 // Receives a Wi-Fi provisioning packet from the app. Like IngestCallbacks, the
 // write callback only buffers + flags; loop() does the apply (off the BLE task).
 class WifiConfigCallbacks : public NimBLECharacteristicCallbacks {
-    void onWrite(NimBLECharacteristic* c) override {
+    void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
         std::string v = c->getValue();
         size_t n = v.size();
         if (n > sizeof(g_wifiCfgBuf)) n = sizeof(g_wifiCfgBuf);
@@ -128,7 +128,7 @@ bool g_wifiScanInFlight = false;   // loop()-only; not shared with BLE task
 // Scan-request write: like the other callbacks, only set a flag; loop() runs
 // the (async) scan and notifies results off the BLE task.
 class WifiScanCallbacks : public NimBLECharacteristicCallbacks {
-    void onWrite(NimBLECharacteristic* c) override {
+    void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
         std::string v = c->getValue();
         if (isScanRequest(reinterpret_cast<const uint8_t*>(v.data()), v.size()))
             g_wifiScanRequested = true;
@@ -154,7 +154,7 @@ unsigned long         g_blePhotoDeadline = 0;            // loop-owned timeout
 // netTask decodes. Frames whose reqId != the in-flight g_blePhotoReqId are
 // dropped (a stale stream from a previous swipe).
 class PhotoBleCallbacks : public NimBLECharacteristicCallbacks {
-    void onWrite(NimBLECharacteristic* c) override {
+    void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
         std::string v = c->getValue();
         const uint8_t* p = (const uint8_t*)v.data();
         size_t n = v.size();

@@ -89,7 +89,9 @@ Config + secrets in `src/config.h` (copy from `config.example.h`; gitignored).
   ATT write); records carry `track`/`squawk` + `registration` (8 B) + `origin`/`dest`
   ICAO (4 B each); display caps `MAX_AIRCRAFT` (10).
 - `HIDE_GROUND_AIRCRAFT` (default 1) drops on-ground aircraft from radar + list on both paths.
-- NimBLE pinned to `^1.4.1` (1.x single-arg `onWrite`); 2.x changed the signature.
+- NimBLE on `^2.5.0` (2.x): characteristic/connection callbacks take a second
+  `NimBLEConnInfo&` arg — `onWrite(NimBLECharacteristic* c, NimBLEConnInfo&)`.
+  Advertising/`getValue`/`setMTU`/`getConnectedCount` stayed source-compatible.
   NimBLE + Wi-Fi/TLS + 115 KB sprite all coexist in SRAM (verified on device).
 - BLE freshness window is short (30 s) — when testing, send right before observing
   or widen `BLE_FRESHNESS_MS`.
