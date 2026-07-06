@@ -44,7 +44,7 @@ dependencies:
   latlong2: ^0.9.1
   flutter_map_cancellable_tile_provider: ^3.1.1
   share_plus: ^13.1.0
-  geocoding: ^4.0.0
+  geocoding: ^5.0.0
   path_provider: ^2.1.6
   shared_preferences: ^2.5.5
 
